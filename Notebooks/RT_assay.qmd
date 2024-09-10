@@ -1,0 +1,1019 @@
+---
+title: RT assay
+description: Simulate the RT assay of Q's group with our model
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    code-tools: true
+    highlight-style: atom-one
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+# Import packages
+
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+import matplotlib.colors as mcolors
+```
+
+# import functions
+
+all functions are in: "notebooks/gsc_model_functions.py"
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+For this we need to load in the patient data and calculate the distribution parameters
+
+```{python}
+#| label: Load_the_real_data
+
+# load in the patient survival data
+historic_df = pd.read_csv("Data/Rho_D_data.csv")
+censored_str = "Censorship (1=censored)"
+survival_str = "Overall Survival"
+# only keep patients that weren't censored
+historic_df = historic_df[historic_df[censored_str] == 0]
+# cut off patients that had very high proliferation rate
+historic_df = historic_df[historic_df["PIHNA rho"] < 100 ] 
+historic_df[censored_str] = True
+
+# fit distribution to the data
+dist_name = 'lognorm'  # Replace with the desired distribution name
+dist = getattr(stats, dist_name)
+params = dist.fit(historic_df["PIHNA rho"])
+    
+shape = params[0]
+loc = params[1]
+scale = params[-1]
+```
+
+# Simulations of radiotherapy assays.
+
+## Changing the concetration of BMP4
+
+Data is for representative patient derived BTIC pre-exposed to different delivery combinations of 100 ng/ml BMP4 for 48 hours followed by different doses of radiation.
+
+```{python}
+#| label: simulate_RT_assay
+
+### import params
+from gsc_model_params import *
+
+s0 = 0.1 # Initial GSCs
+dt = 0.05 # time step
+t_rad = 2 # time of radiotherapy
+t_assay = dt # time of assay after radiotherapy
+t_final = t_rad + t_assay
+
+RT_doses = [0,2,4,6,8,10] # diffent doses of radiation used in assay
+BMP4_doses = [0,0.5,10] # different doses of BMP4 used in assay
+BMP4_colors = list(mcolors.TABLEAU_COLORS)
+
+nRT = len(RT_doses) # number of RT doses
+nB = len(BMP4_doses) # number of BMP4 doses
+
+# to store time and tumor size at RT and survival assay
+RT_pre_size = np.zeros((nRT,nB))
+RT_pre_t = np.zeros((nRT,nB))
+RT_post_size = np.zeros((nRT,nB))
+RT_post_t = np.zeros((nRT,nB))
+assay_size = np.zeros((nRT,nB))
+assay_t = np.zeros((nRT,nB))
+
+# use the mean of the fitted distribution as an example realistic proliferation rate
+pro_rate = loc+scale*np.exp(shape**2/2)
+
+# Define proliferation rates for the different cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# calc alpha as proportional to rho
+alpha = gmf.calc_alpha_from_rho(mv[0],10*alpha_rho_scale)
+beta = gmf.calc_beta(alpha)
+
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+
+# set up array to store model solution
+u_all = []
+VS_all = []
+N_all = []
+
+
+for iB in range(nB) :
+    for j in range(nRT):
+
+        # set up array to store model solution
+        u = np.zeros((nt,n+1))
+        VS = np.zeros(nt)
+        N = np.zeros(nt)
+
+        # define IC
+        u[0,0] = s0
+        VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+        N[0] = u[0,0] + VS[0]
+
+        i = 0
+        while t[i] < t_final:
+                if t[i] <= t_rad : 
+                    Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi*BMP4_doses[iB]))
+                else : 
+                    Ps = Ps_max
+
+                u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                # apply radiation
+                if t[i] == t_rad :
+                    u[i+1,:] = gmf.radiation(u[i+1,:],alpha,beta,eta,mu,d=RT_doses[j])
+                    RT_pre_size[j,iB] = np.sum(u[i,:])
+                    RT_pre_t[j,iB] = t[i]        
+                    RT_post_size[j,iB] = np.sum(u[i+1,:])
+                    RT_post_t[j,iB] = t[i+1]        
+                    
+                VS[i+1] = np.sum(u[i+1,1:n+1])
+                N[i+1] = u[i+1,0] + VS[i+1]
+                            
+                i = i + 1
+
+        u_all.append(u)
+        VS_all.append(VS)
+        N_all.append(N)
+        
+
+```
+
+plot size of growth and percentage of GSCs in assay
+
+```{python}
+#| label: fig-size_GSC_frac_BMP4
+#| fig-cap: Caption
+#| fig-alt: alt text
+
+fig, axs = plt.subplots(2, sharex=True)
+w = 0
+BMP4_colors = list(mcolors.TABLEAU_COLORS)
+for iB in range(nB) :
+    for j in range(nRT):
+
+        axs[1].plot(t,VS_all[w]/N_all[w], BMP4_colors[iB], alpha=0.25) 
+        axs[0].plot(t,N_all[w],BMP4_colors[iB], alpha = 0.5)
+
+        axs[0].plot(RT_pre_t[j,iB],RT_pre_size[j,iB],'r*',label='_nolegend_')
+        axs[0].plot(RT_post_t[j,iB],RT_post_size[j,iB],'g*',label='_nolegend_')
+
+        w = w + 1
+
+axs[1].set(xlabel="Time (days)")
+axs[1].set(ylabel="non-Stem fraction")
+axs[0].set(ylabel="Tumour cell count / density")
+axs[1].set(ylabel="non-Stem fraction")
+fig.suptitle("Simulated tumour cell growth with RT")
+leg = axs[0].legend(["BMP4 = 0 ng/ml","BMP4 = 0.5 ng/ml","BMP4 = 10 ng/ml"])
+leg.legend_handles[0].set_color('tab:blue')
+leg.legend_handles[1].set_color('tab:orange')
+leg.legend_handles[2].set_color('tab:green')
+```
+
+Plot simulated dose respones
+
+```{python}
+#| label: fig-dose_response_BMP4
+#| fig-cap: Caption
+#| fig-alt: alt text
+
+fig_DR2, ax_DR2 = plt.subplots()
+ax_DR2.plot(RT_doses,RT_post_size/RT_post_size[0,:],'-*')
+ax_DR2.set(xlabel="RT dose (Gy)")
+ax_DR2.set(ylabel="Size after RT relative to 0 Gy")
+ax_DR2.set_title("Simulated RT dose-response")
+ax_DR2.legend(["BMP4 = 0 ng/ml","BMP4 = 0.5 ng/ml","BMP4 = 10 ng/ml"])
+
+```
+
+## Changing the sensitivity (psi) of the GSCs to BMP4
+
+We can simulate the same thing but consider varying the patient specific sensitivity $\psi$ to rather than BMP4 dose.
+
+```{python}
+#| label: sim_assay_psi
+
+### import params
+from gsc_model_params import *
+
+### override some parameters ###
+s0 = 0.1 # Initial GSCs
+dt = 0.05 # time step
+t_rad = 2 # time of radiotherapy
+t_assay = dt # time of assay after radiotherapy
+t_final = t_rad + t_assay
+
+RT_doses = [0,2,4,6,8,10] # diffent doses of radiation used in assay
+psi_values = [0,0.1,50] # different values of psi used in assay
+psi_colors = list(mcolors.TABLEAU_COLORS)
+
+BMP4_dose = 10 # bmp4 dose is now fixed
+
+nRT = len(RT_doses) # number of RT doses
+npsi = len(psi_values) # number of BMP4 doses
+
+# to store time and tumor size at RT and survival assay
+RT_pre_size = np.zeros((nRT,npsi))
+RT_pre_t = np.zeros((nRT,npsi))
+RT_post_size = np.zeros((nRT,npsi))
+RT_post_t = np.zeros((nRT,npsi))
+assay_size = np.zeros((nRT,npsi))
+assay_t = np.zeros((nRT,npsi))
+
+# use the mean of the fitted distribution as an example realistic proliferation rate
+pro_rate = loc+scale*np.exp(shape**2/2)
+
+
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# calc alpha as proportional to rho
+alpha = gmf.calc_alpha_from_rho(mv[0],10*alpha_rho_scale)
+beta = gmf.calc_beta(alpha)
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+
+# set up array to store model solution
+u_all = []
+VS_all = []
+N_all = []
+
+
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        # set up array to store model solution
+        u = np.zeros((nt,n+1))
+        VS = np.zeros(nt)
+        N = np.zeros(nt)
+
+        # define IC
+        u[0,0] = s0
+        VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+        N[0] = u[0,0] + VS[0]
+
+        i = 0
+        while t[i] < t_final:
+                if t[i] <= t_rad : 
+                    Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi_values[ipsi]*BMP4_dose))
+                else : 
+                    Ps = Ps_max
+
+                u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                # apply radiation
+                if t[i] == t_rad :
+                    u[i+1,:] = gmf.radiation(u[i+1,:],alpha,beta,eta,mu,d=RT_doses[j])
+                    RT_pre_size[j,ipsi] = np.sum(u[i,:])
+                    RT_pre_t[j,ipsi] = t[i]        
+                    RT_post_size[j,ipsi] = np.sum(u[i+1,:])
+                    RT_post_t[j,ipsi] = t[i+1]        
+                    
+                VS[i+1] = np.sum(u[i+1,1:n+1])
+                N[i+1] = u[i+1,0] + VS[i+1]
+                            
+                i = i + 1
+
+        u_all.append(u)
+        VS_all.append(VS)
+        N_all.append(N)
+        
+
+```
+
+Make the same plots as for BMP4 dose but for psi
+
+```{python}
+#| label: fig-size_GSC_frac_psi
+#| fig-cap: Caption
+#| fig-alt: alt text
+
+fig, axs = plt.subplots(2, sharex=True)
+w = 0
+BMP4_colors = list(mcolors.TABLEAU_COLORS)
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        axs[1].plot(t,VS_all[w]/N_all[w], psi_colors[ipsi], alpha=0.25) 
+        axs[0].plot(t,N_all[w],psi_colors[ipsi], alpha = 0.5)
+
+        axs[0].plot(RT_pre_t[j,ipsi],RT_pre_size[j,ipsi],'r*',label='_nolegend_')
+        axs[0].plot(RT_post_t[j,ipsi],RT_post_size[j,ipsi],'g*',label='_nolegend_')
+
+        w = w + 1
+
+axs[1].set(xlabel="Time (days)")
+axs[1].set(ylabel="non-Stem fraction")
+axs[0].set(ylabel="Tumour cell count / density")
+axs[1].set(ylabel="non-Stem fraction")
+fig.suptitle("Simulated tumour cell growth with RT")
+leg = axs[0].legend(psi_values)
+leg.legend_handles[0].set_color('tab:blue')
+leg.legend_handles[1].set_color('tab:orange')
+leg.legend_handles[2].set_color('tab:green')
+```
+
+Plot simulated dose respones
+
+```{python}
+#| label: fig-dose_response_psi
+#| fig-cap: Caption
+#| fig-alt: alt text
+
+fig_DR2, ax_DR2 = plt.subplots()
+ax_DR2.plot(RT_doses,RT_post_size/RT_post_size[0,:],'-*')
+ax_DR2.set(xlabel="RT dose (Gy)")
+ax_DR2.set(ylabel="Size after RT relative to 0 Gy")
+ax_DR2.set_title("Simulated RT dose-response")
+ax_DR2.legend(psi_values)
+
+```
+
+With our in vivo number we do not get much effect of BMP4. But this is because to get 2% GSCs we are assuming an in vivo environemnt in which there are natural differentiation promoters such as BMP4. IN vitro experiments there would be no endogenous BMP4 / differentiation promoters so the value of Ps would be much higher closer to 1.
+
+## Assuming no differentation promoter in vitro
+
+```{python}
+#| label: sim_assay_no_diff_promoter
+
+### import params
+from gsc_model_params import *
+
+### override some parameters ###
+Ps_max = 1 # Max probability of self renewal - CHANGED FROM 0.56
+
+s0 = 0.1 # Initial GSCs
+dt = 0.05 # time step
+t_rad = 2 # time of radiotherapy
+t_assay = dt # time of assay after radiotherapy
+t_final = t_rad + t_assay
+
+RT_doses = [0,2,4,6,8,10] # diffent doses of radiation used in assay
+psi_values = [0,0.1,50] # different values of psi used in assay
+psi_colors = list(mcolors.TABLEAU_COLORS)
+
+BMP4_dose = 10 # bmp4 dose is now fixed
+
+nRT = len(RT_doses) # number of RT doses
+npsi = len(psi_values) # number of BMP4 doses
+
+# to store time and tumor size at RT and survival assay
+RT_pre_size = np.zeros((nRT,npsi))
+RT_pre_t = np.zeros((nRT,npsi))
+RT_post_size = np.zeros((nRT,npsi))
+RT_post_t = np.zeros((nRT,npsi))
+assay_size = np.zeros((nRT,npsi))
+assay_t = np.zeros((nRT,npsi))
+
+# use the mean of the fitted distribution as an example realistic proliferation rate
+pro_rate = loc+scale*np.exp(shape**2/2)
+
+
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# calc alpha as proportional to rho
+alpha = gmf.calc_alpha_from_rho(mv[0],10*alpha_rho_scale)
+beta = gmf.calc_beta(alpha)
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+
+# set up array to store model solution
+u_all = []
+VS_all = []
+N_all = []
+
+
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        # set up array to store model solution
+        u = np.zeros((nt,n+1))
+        VS = np.zeros(nt)
+        N = np.zeros(nt)
+
+        # define IC
+        u[0,0] = s0
+        VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+        N[0] = u[0,0] + VS[0]
+
+        i = 0
+        while t[i] < t_final:
+                if t[i] <= t_rad : 
+                    Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi_values[ipsi]*BMP4_dose))
+                else : 
+                    Ps = Ps_max
+
+                u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                # apply radiation
+                if t[i] == t_rad :
+                    u[i+1,:] = gmf.radiation(u[i+1,:],alpha,beta,eta,mu,d=RT_doses[j])
+                    RT_pre_size[j,ipsi] = np.sum(u[i,:])
+                    RT_pre_t[j,ipsi] = t[i]        
+                    RT_post_size[j,ipsi] = np.sum(u[i+1,:])
+                    RT_post_t[j,ipsi] = t[i+1]        
+                    
+                VS[i+1] = np.sum(u[i+1,1:n+1])
+                N[i+1] = u[i+1,0] + VS[i+1]
+                            
+                i = i + 1
+
+        u_all.append(u)
+        VS_all.append(VS)
+        N_all.append(N)
+        
+
+```
+
+Make the same plots as for BMP4 dose but for psi
+
+```{python}
+#| label: fig-size_GSC_frac_no_diff_promoter
+#| fig-cap: Caption
+#| fig-alt: alt text
+
+fig, axs = plt.subplots(2, sharex=True)
+w = 0
+BMP4_colors = list(mcolors.TABLEAU_COLORS)
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        axs[1].plot(t,VS_all[w]/N_all[w], psi_colors[ipsi], alpha=0.25) 
+        axs[0].plot(t,N_all[w],psi_colors[ipsi], alpha = 0.5)
+
+        axs[0].plot(RT_pre_t[j,ipsi],RT_pre_size[j,ipsi],'r*',label='_nolegend_')
+        axs[0].plot(RT_post_t[j,ipsi],RT_post_size[j,ipsi],'g*',label='_nolegend_')
+
+        w = w + 1
+
+axs[1].set(xlabel="Time (days)")
+axs[1].set(ylabel="non-Stem fraction")
+axs[0].set(ylabel="Tumour cell count / density")
+axs[1].set(ylabel="non-Stem fraction")
+fig.suptitle("Simulated tumour cell growth with RT, no diff promoter")
+leg = axs[0].legend(psi_values)
+leg.legend_handles[0].set_color('tab:blue')
+leg.legend_handles[1].set_color('tab:orange')
+leg.legend_handles[2].set_color('tab:green')
+leg.legend_handles[0].set_alpha(1)
+leg.legend_handles[1].set_alpha(1)
+leg.legend_handles[2].set_alpha(1)
+```
+
+Plot simulated dose respones
+
+```{python}
+#| label: fig-dose_response_no_diff_promoter
+#| fig-cap: Caption
+#| fig-alt: alt text
+
+fig_DR2, ax_DR2 = plt.subplots()
+ax_DR2.plot(RT_doses,RT_post_size/RT_post_size[0,:],'-*')
+ax_DR2.set(xlabel="RT dose (Gy)")
+ax_DR2.set(ylabel="Size after RT relative to 0 Gy")
+ax_DR2.set_title("Simulated RT dose-response, no diff promoter")
+ax_DR2.legend(psi_values)
+
+```
+
+# Replicate experimental results
+
+We have experimentall doubling times for some of the cell lines:
+
+-   **GBM1a** - has a doubling time of 54.71329hrs (2.2797204166666667 days), this gives a growth rate in terms rho 1/year as $m_s$ = 65 (roughly)
+
+-   **QNS120** - has a doubling time of 43.5243
+
+
+## GBM1a
+
+doubling time is 54,71329hrs (2.27days) according to this the growth should be 
+
+$$
+    N(t) = N_0 2^{t/T}
+$$
+
+```{python}
+
+N = s0*2**(48/54.71329)
+print("Expected size of colon after 48hrs for GMB1a")
+print(N)
+
+```
+
+```{python}
+#| label: QNS120_sim
+
+### import params
+from gsc_model_params import *
+
+### override some parameters ###
+Ps_max = 1 # Max probability of self renewal
+Ps_min = 0 
+
+s0 = 0.1 # Initial GSCs
+dt = 0.01 # time step
+t_rad = 2 # time of radiotherapy
+t_assay = dt # time of assay after radiotherapy
+t_final = t_rad + t_assay
+
+RT_doses = [0,2,4,6] # diffent doses of radiation used in assay
+psi_values = [0,0.115] # different values of psi used in assay
+psi_colors = list(mcolors.TABLEAU_COLORS)
+
+BMP4_dose = 10 # bmp4 dose is now fixed
+
+nRT = len(RT_doses) # number of RT doses
+npsi = len(psi_values) # number of BMP4 doses
+
+# to store time and tumor size at RT and survival assay
+RT_pre_size = np.zeros((nRT,npsi))
+RT_pre_t = np.zeros((nRT,npsi))
+RT_post_size = np.zeros((nRT,npsi))
+RT_post_t = np.zeros((nRT,npsi))
+assay_size = np.zeros((nRT,npsi))
+assay_t = np.zeros((nRT,npsi))
+
+# use the mean of the fitted distribution as an example realistic proliferation rate
+pro_rate = 65
+
+
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# calc alpha as proportional to rho
+#alpha = gmf.calc_alpha_from_rho(pro_rate, alpha_rho_scale)
+#beta = gmf.calc_beta(alpha, ratio=3)
+
+# According to the RT data fits for GBM1a we get
+alpha = 0.22*6
+beta = 0.08*6
+
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+
+# set up array to store model solution
+u_all = []
+VS_all = []
+N_all = []
+
+
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        # set up array to store model solution
+        u = np.zeros((nt,n+1))
+        VS = np.zeros(nt)
+        N = np.zeros(nt)
+
+        # define IC
+        u[0,0] = s0
+        VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+        N[0] = u[0,0] + VS[0]
+
+        i = 0
+        while t[i] < t_final:
+                if t[i] <= t_rad : 
+                    Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi_values[ipsi]*BMP4_dose))
+                else : 
+                    Ps = Ps_max
+
+                u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                # apply radiation
+                if t[i] == t_rad :
+                    u[i+1,:] = gmf.radiation(u[i+1,:],alpha,beta,eta,mu,d=RT_doses[j])
+                    RT_pre_size[j,ipsi] = np.sum(u[i,:])
+                    RT_pre_t[j,ipsi] = t[i]        
+                    RT_post_size[j,ipsi] = np.sum(u[i+1,:])
+                    RT_post_t[j,ipsi] = t[i+1]        
+                    
+                VS[i+1] = np.sum(u[i+1,1:n+1])
+                N[i+1] = u[i+1,0] + VS[i+1]
+                            
+                i = i + 1
+
+        u_all.append(u)
+        VS_all.append(VS)
+        N_all.append(N)
+        print("Actuall size after 48hrs")
+        print(N[-2]) # need to print second last item as the last one has had RT applied
+
+print("Stem cell fraction just before RT")
+print(1- VS[-2]/N[-2])   
+print("According to DLQ stem cell fraction should be")
+print(0.5210781)
+
+```
+
+
+
+```{python}
+#| label: QNS120_frac_GSC
+#| fig-cap: Caption
+#| fig-alt: alt text
+
+fig, axs = plt.subplots(2, sharex=True)
+w = 0
+BMP4_colors = list(mcolors.TABLEAU_COLORS)
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        axs[1].plot(t,VS_all[w]/N_all[w], psi_colors[ipsi], alpha=0.25) 
+        axs[0].plot(t,N_all[w],psi_colors[ipsi], alpha = 0.5)
+
+        axs[0].plot(RT_pre_t[j,ipsi],RT_pre_size[j,ipsi],'r*',label='_nolegend_')
+        axs[0].plot(RT_post_t[j,ipsi],RT_post_size[j,ipsi],'g*',label='_nolegend_')
+
+        w = w + 1
+
+axs[1].set(xlabel="Time (days)")
+axs[1].set(ylabel="non-Stem fraction")
+axs[0].set(ylabel="Tumour density")
+axs[1].set(ylabel="non-Stem fraction")
+fig.suptitle("Simulated RT assay")
+leg = axs[0].legend([r"$\psi = 0$",fr"$\psi = {psi_values[1]}$"], loc='upper left')
+leg.legend_handles[0].set_color('tab:blue')
+leg.legend_handles[1].set_color('tab:orange')
+#leg.legend_handles[2].set_color('tab:green')
+#leg.legend_handles[3].set_color('tab:red')
+#leg.legend_handles[4].set_color('tab:purple')
+leg.legend_handles[0].set_alpha(1)
+leg.legend_handles[1].set_alpha(1)
+#leg.legend_handles[2].set_alpha(1)
+#leg.legend_handles[3].set_alpha(1)
+#leg.legend_handles[4].set_alpha(1)
+plt.tight_layout()
+plt.savefig("png/simulated_RT_assay_GBM1a.png")
+plt.savefig("svg/simulated_RT_assay_GBM1a.svg")
+plt.show()
+
+```
+
+Plot simulated dose respones
+
+```{python}
+#| label: fig-dose_response_no_diff_promoter2
+#| fig-cap: Caption
+#| fig-alt: alt text
+
+fig_DR2, ax_DR2 = plt.subplots()
+ax_DR2.plot(RT_doses,RT_post_size/RT_post_size[0,:],'-*')
+ax_DR2.set(xlabel="RT dose (Gy)")
+ax_DR2.set(ylabel="Size after RT relative to 0 Gy")
+ax_DR2.set_title("Simulated RT dose-response")
+ax_DR2.legend(psi_values)
+plt.tight_layout()
+plt.show()
+
+```
+
+
+Load in the real survival data to fit to.
+
+```{python}
+
+rt_data = pd.read_csv("Data/CFA_data-BMP4-RT Human GSCs.csv")
+
+# filter out doses above 6Gy
+rt_data = rt_data[rt_data["dose"] <= 6]
+
+# get GBM1a
+GBM1a_rt_data = rt_data[rt_data["cline"] == "GBM1a"]
+
+# keep only replicates that have measurements at 0,2,4,6 Gy
+keep_reps = []
+for rep in GBM1a_rt_data["rep"].unique():
+    test = GBM1a_rt_data[GBM1a_rt_data["rep"] == rep]
+    if len(test["dose"].unique()) == 4:
+        keep_reps.append(rep)
+    print(keep_reps)
+
+GBM1a_rt_data = GBM1a_rt_data[GBM1a_rt_data['rep'].isin(keep_reps)]
+
+# Normalise the data by treatment group and dose and replicate
+GBM1a_rt_data["norm_pe"] = 0 # initialisea column with all 0s
+
+groups = GBM1a_rt_data["group"].unique()
+
+for rep in keep_reps:
+    for group in groups:
+        # Filter the DataFrame for the current replicate and group
+        test = GBM1a_rt_data[(GBM1a_rt_data["rep"] == rep) & (GBM1a_rt_data["group"] == group)]
+        
+        # Calculate the mean of 'pe' at dose 0 for normalization
+        mean_pe_dose_0 = test[test["dose"] == 0]["pe"].mean()
+        
+        # Normalize 'pe' and update 'norm_pe' in the original DataFrame
+        GBM1a_rt_data.loc[(GBM1a_rt_data["rep"] == rep) & (GBM1a_rt_data["group"] == group), "norm_pe"] = test["pe"] / mean_pe_dose_0
+
+print(GBM1a_rt_data)
+
+print(GBM1a_rt_data[GBM1a_rt_data["group"]=="B100"])
+
+# plot the data
+plt.figure()
+plt.plot(GBM1a_rt_data[GBM1a_rt_data["group"] == "CTRL"]["dose"],GBM1a_rt_data[GBM1a_rt_data["group"] == "CTRL"]["norm_pe"],'o', alpha = 0.2)
+plt.plot(GBM1a_rt_data[GBM1a_rt_data["group"] == "B100"]["dose"],GBM1a_rt_data[GBM1a_rt_data["group"] == "B100"]["norm_pe"],'o',alpha = 0.2)
+
+RT_to_plot = RT_post_size/RT_post_size[0,:]
+#plt.plot(RT_doses,RT_post_size/RT_post_size[0,:],'-*')
+plt.plot(RT_doses, RT_to_plot[:,0],'b-*')
+plt.plot(RT_doses, RT_to_plot[:,1],'-*', color='orange')
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.savefig("png/simulated_dose_response_GBM1a.png")
+plt.savefig("svg/simulated_dose_response_GBM1a.svg")
+plt.show()
+
+```
+
+
+
+## QNS120
+
+doubling time is 43.5243hrs (1.8135125days) according to this the growth should be 
+
+$$
+    N(t) = N_0 2^{t/T}
+$$
+
+```{python}
+
+N = s0*2**(48/43.5243)
+print("Expected size of colon after 48hrs for GMB1a")
+print(N)
+
+```
+
+```{python}
+
+
+### import params
+from gsc_model_params import *
+
+### override some parameters ###
+Ps_max = 1 # Max probability of self renewal
+Ps_min = 0 
+
+s0 = 0.1 # Initial GSCs
+dt = 0.01 # time step
+t_rad = 2 # time of radiotherapy
+t_assay = dt # time of assay after radiotherapy
+t_final = t_rad + t_assay
+
+RT_doses = [0,2,4,6] # diffent doses of radiation used in assay
+psi_values = [0,0.155] # different values of psi used in assay
+psi_colors = list(mcolors.TABLEAU_COLORS)
+
+BMP4_dose = 10 # bmp4 dose is now fixed
+
+nRT = len(RT_doses) # number of RT doses
+npsi = len(psi_values) # number of BMP4 doses
+
+# to store time and tumor size at RT and survival assay
+RT_pre_size = np.zeros((nRT,npsi))
+RT_pre_t = np.zeros((nRT,npsi))
+RT_post_size = np.zeros((nRT,npsi))
+RT_post_t = np.zeros((nRT,npsi))
+assay_size = np.zeros((nRT,npsi))
+assay_t = np.zeros((nRT,npsi))
+
+# use the mean of the fitted distribution as an example realistic proliferation rate
+pro_rate = 81.5
+
+
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# calc alpha as proportional to rho
+#alpha = gmf.calc_alpha_from_rho(pro_rate, alpha_rho_scale)
+#beta = gmf.calc_beta(alpha, ratio=3)
+
+# According to the RT data fits for GBM1a we get
+alpha = 0
+beta = 0.029743166*(100/13)
+
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+
+# set up array to store model solution
+u_all = []
+VS_all = []
+N_all = []
+
+
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        # set up array to store model solution
+        u = np.zeros((nt,n+1))
+        VS = np.zeros(nt)
+        N = np.zeros(nt)
+
+        # define IC
+        u[0,0] = s0
+        VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+        N[0] = u[0,0] + VS[0]
+
+        i = 0
+        while t[i] < t_final:
+                if t[i] <= t_rad : 
+                    Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi_values[ipsi]*BMP4_dose))
+                else : 
+                    Ps = Ps_max
+
+                u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                # apply radiation
+                if t[i] == t_rad :
+                    u[i+1,:] = gmf.radiation(u[i+1,:],alpha,beta,eta,mu,d=RT_doses[j])
+                    RT_pre_size[j,ipsi] = np.sum(u[i,:])
+                    RT_pre_t[j,ipsi] = t[i]        
+                    RT_post_size[j,ipsi] = np.sum(u[i+1,:])
+                    RT_post_t[j,ipsi] = t[i+1]        
+                    
+                VS[i+1] = np.sum(u[i+1,1:n+1])
+                N[i+1] = u[i+1,0] + VS[i+1]
+                            
+                i = i + 1
+
+        u_all.append(u)
+        VS_all.append(VS)
+        N_all.append(N)
+        print("Actuall size after 48hrs")
+        print(N[-2]) # need to print second last item as the last one has had RT applied
+
+print("Stem cell fraction just before RT")
+print(1- VS[-2]/N[-2])    
+
+print("According to DLQ stem cell fraction should be")
+print(0.4063945)
+
+```
+
+
+
+```{python}
+
+
+fig, axs = plt.subplots(2, sharex=True)
+w = 0
+BMP4_colors = list(mcolors.TABLEAU_COLORS)
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        axs[1].plot(t,VS_all[w]/N_all[w], psi_colors[ipsi], alpha=0.25) 
+        axs[0].plot(t,N_all[w],psi_colors[ipsi], alpha = 0.5)
+
+        axs[0].plot(RT_pre_t[j,ipsi],RT_pre_size[j,ipsi],'r*',label='_nolegend_')
+        axs[0].plot(RT_post_t[j,ipsi],RT_post_size[j,ipsi],'g*',label='_nolegend_')
+
+        w = w + 1
+
+axs[1].set(xlabel="Time (days)")
+axs[1].set(ylabel="non-Stem fraction")
+axs[0].set(ylabel="Tumour density")
+axs[1].set(ylabel="non-Stem fraction")
+fig.suptitle("Simulated RT assay")
+leg = axs[0].legend([r"$\psi = 0$",fr"$\psi = {psi_values[1]}$"], loc='upper left')
+leg.legend_handles[0].set_color('tab:blue')
+leg.legend_handles[1].set_color('tab:orange')
+#leg.legend_handles[2].set_color('tab:green')
+#leg.legend_handles[3].set_color('tab:red')
+#leg.legend_handles[4].set_color('tab:purple')
+leg.legend_handles[0].set_alpha(1)
+leg.legend_handles[1].set_alpha(1)
+#leg.legend_handles[2].set_alpha(1)
+#leg.legend_handles[3].set_alpha(1)
+#leg.legend_handles[4].set_alpha(1)
+plt.tight_layout()
+#plt.savefig("../SMB_figs/simulated_RT_assay.svg")
+
+```
+
+Plot simulated dose respones
+
+```{python}
+
+
+fig_DR2, ax_DR2 = plt.subplots()
+ax_DR2.plot(RT_doses,RT_post_size/RT_post_size[0,:],'-*')
+ax_DR2.set(xlabel="RT dose (Gy)")
+ax_DR2.set(ylabel="Size after RT relative to 0 Gy")
+ax_DR2.set_title("Simulated RT dose-response")
+ax_DR2.legend(psi_values)
+plt.tight_layout()
+#plt.savefig("../SMB_figs/simulated_dose_response.svg")
+
+```
+
+
+Load in the real survival data to fit to.
+
+```{python}
+
+rt_data = pd.read_csv("Data/CFA_data-BMP4-RT Human GSCs.csv")
+
+# filter out doses above 6Gy
+rt_data = rt_data[rt_data["dose"] <= 6]
+
+# get QNS120
+QNS120_rt_data = rt_data[rt_data["cline"] == "QNS120"]
+
+# keep only replicates that have measurements at 0,2,4,6 Gy
+keep_reps = []
+for rep in QNS120_rt_data["rep"].unique():
+    test = QNS120_rt_data[QNS120_rt_data["rep"] == rep]
+    if len(test["dose"].unique()) == 4:
+        keep_reps.append(rep)
+    #print(keep_rep)
+
+QNS120_rt_data = QNS120_rt_data[QNS120_rt_data['rep'].isin(keep_reps)]
+
+# Normalise the data by treatment group and dose and replicate
+QNS120_rt_data["norm_pe"] = 0 # initialisea column with all 0s
+
+groups = QNS120_rt_data["group"].unique()
+
+for rep in keep_reps:
+    for group in groups:
+        # Filter the DataFrame for the current replicate and group
+        test = QNS120_rt_data[(QNS120_rt_data["rep"] == rep) & (QNS120_rt_data["group"] == group)]
+        
+        # Calculate the mean of 'pe' at dose 0 for normalization
+        mean_pe_dose_0 = test[test["dose"] == 0]["pe"].mean()
+        
+        # Normalize 'pe' and update 'norm_pe' in the original DataFrame
+        QNS120_rt_data.loc[(QNS120_rt_data["rep"] == rep) & (QNS120_rt_data["group"] == group), "norm_pe"] = test["pe"] / mean_pe_dose_0
+
+
+# plot the data
+plt.figure()
+plt.plot(QNS120_rt_data[QNS120_rt_data["group"] == "CTRL"]["dose"],QNS120_rt_data[QNS120_rt_data["group"] == "CTRL"]["norm_pe"],'o', alpha = 0.2)
+plt.plot(QNS120_rt_data[QNS120_rt_data["group"] == "B100"]["dose"],QNS120_rt_data[QNS120_rt_data["group"] == "B100"]["norm_pe"],'o',alpha = 0.2)
+
+RT_to_plot = RT_post_size/RT_post_size[0,:]
+#plt.plot(RT_doses,RT_post_size/RT_post_size[0,:],'-*')
+plt.plot(RT_doses, RT_to_plot[:,0],'b-*')
+plt.plot(RT_doses, RT_to_plot[:,1],'-*', color='orange')
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.show()
+```

@@ -1,0 +1,126 @@
+---
+title: Histogram
+description: Load in patient data and plot histogram of pro rates
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+
+# Import packages and define functions
+
+Import packages
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import pandas as pd
+import seaborn as sns
+from sksurv.nonparametric import kaplan_meier_estimator
+from scipy.stats import lognorm
+```
+
+# Load in real patient data
+
+Load in real patient data from: 10.1126/scitranslmed.aao5253
+```{python}
+#| label: Load_the_data
+
+# load in the patient survival data
+historic_df = pd.read_csv("Rho_D_data.csv")
+
+censored_str = "Censorship (1=censored)"
+survival_str = "Overall Survival"
+
+# only keep patients that weren't censored
+historic_df = historic_df[historic_df[censored_str] == 0]
+# cut off patients that had very high proliferation rate
+historic_df = historic_df[historic_df["PIHNA rho"] < 100 ] 
+
+historic_df[censored_str] = True
+```
+
+Plot a KM survival of the real patients
+```{python}
+#| label: fig-KM_real_surv
+
+time, survival_prob, conf_int = kaplan_meier_estimator(historic_df[censored_str], historic_df[survival_str], conf_type="log-log")
+plt.step(time, survival_prob, where="post")
+plt.fill_between(time, conf_int[0], conf_int[1], alpha=0.25, step="post")
+plt.ylim(0, 1)
+plt.ylabel("Survival probability")
+plt.xlabel("time (days)")
+plt.title("Real historic controls survival")
+plt.show()
+```
+
+
+Fit a lognormal distribution to proliferation rate data
+```{python}
+#| label: fig-hist_pro_rate_lognorm
+#| fig-cap: Histogram of Proliferation rates of data from [@yang2019], fit to a lognorm distribution.
+#| fig-alt: Histogram of proliferation rate data with lognorm pdf overleayed
+#| 
+import scipy.stats as stats
+# fit distribution to the data
+dist_name = 'lognorm'  # Replace with the desired distribution name
+dist = getattr(stats, dist_name)
+params = dist.fit(historic_df["PIHNA rho"])
+    
+shape = params[0]
+loc = params[1]
+scale = params[-1]
+
+x_values = np.linspace(0,100,1001)
+pdf_values = stats.lognorm.pdf(x_values, s=shape, loc=loc, scale=scale)
+plt.plot(x_values, pdf_values, label='Lognormal PDF', color='red')
+# plot a histogram of proliferation rate
+plt.hist(historic_df["PIHNA rho"], bins=30, color='tab:blue', density=True)
+plt.xlabel("Rho (1/year)", fontsize=14)
+plt.ylabel("Frequency", fontsize=14)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+
+plt.tight_layout()
+plt.savefig("../Manuscript/images/png/hist_data.png")
+plt.show()
+
+
+```
+
+print out the values of the mu and sigma for the fitted lognormal distribution, to use in table of params.
+```{python}
+#| label: print_lognorm_params
+dist.stats(shape,loc,scale)
+mu_normal = np.log(scale)
+sigma_normal = shape
+mean_lognormal = dist.mean(shape,loc,scale)
+var_lognormal = dist.var(shape,loc,scale)
+mean_lognormal_formula = loc+scale*np.exp(shape**2/2)
+var_lognormal_formula = (np.exp(shape**2)-1)*(np.exp(shape**2))*scale**2
+print(f"mu = {mu_normal} (mean of the underlying normal distribution)")
+print(f"sigma = {sigma_normal} (standard deviation of the underlying normal distribution")
+print(f"mean (SciPy) = {mean_lognormal} (of the lognormal)")
+print(f"mean (formula)= {mean_lognormal_formula} (of the lognormal)")
+print(f"Variance (SciPy)= {var_lognormal} (of the lognormal)")
+print(f"Variance (formula)= {var_lognormal_formula} (of the lognormal)")
+```
+
+
+
+
+
+

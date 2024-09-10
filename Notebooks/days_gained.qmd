@@ -1,0 +1,534 @@
+---
+title: days gained example
+description: days gained against psi and proliferation surfaces
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+
+
+
+# import packages and define functions
+
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+from numba import jit
+from sksurv.compare import compare_survival
+from sksurv.nonparametric import kaplan_meier_estimator
+```
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+For this we need to load in the patient data and calualte the distribution params
+```{python}
+#| label: Load_the_real_data
+
+# load in the patient survival data
+historic_df = pd.read_csv("Data/Rho_D_data.csv")
+censored_str = "Censorship (1=censored)"
+survival_str = "Overall Survival"
+# only keep patients that weren't censored
+historic_df = historic_df[historic_df[censored_str] == 0]
+# cut off patients that had very high proliferation rate
+historic_df = historic_df[historic_df["PIHNA rho"] < 100 ] 
+historic_df[censored_str] = True
+
+# fit distribution to the data
+dist_name = 'lognorm'  # Replace with the desired distribution name
+dist = getattr(stats, dist_name)
+params = dist.fit(historic_df["PIHNA rho"])
+
+shape = params[0]
+loc = params[1]
+scale = params[-1]
+```
+
+my own simulate model function
+
+```{python}
+
+@jit
+def simulate_model_my(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,rng_seed) : 
+    np.random.seed(rng_seed)
+    t = np.arange(0, t_final+dt/2, dt) # arange(a,b,c) uses the open interval [a,b) with steps c
+    nt = len(t)
+    dt_out = 1
+
+    u = np.zeros((nt,n+1))
+    VS = np.zeros(nt)
+    N = np.zeros(nt)
+    m = np.zeros(nt)
+    B = np.zeros(nt)
+
+    t_rad = -25
+    rad_counter = 0
+    detect_size = 0
+    detect_t = 0
+    t2 = 0 # doubling time, approximated by time from 0.1*k to 0.2*k
+    tp1 = 0 # time to cross 0.1*k
+    tp2 = 0 # time to cross 0.2*k
+
+    # define IC
+    u[0,:] = u0
+    VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+    N[0] = u[0,0] + VS[0]
+
+    t_size = N[0] 
+
+    m_init = 200
+
+    i = 0
+    while t_size < 0.6 and i<nt-1:
+
+            Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi*B[i]))
+                
+            u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+
+            # update ASMC mesenchymal cells delivering BMP
+            m[i+1] = m[i] + dt * (- delta_m * m[i])
+            B[i+1] = B[i] + dt * (C * m[i] - u_s*B[i]*u[i,0] - delta_b*B[i])
+
+            VS[i+1] = np.sum(u[i+1,1:n+1])
+            N[i+1] = u[i+1,0] + VS[i+1]
+
+            # apply radiation
+            if abs(t[i]-t_rad) < dt/2 and rad_counter < n_RT_repeat*n_RT_cycles and rad_on == 1 :
+                u[i+1,:] = gmf.radiation(u[i+1,:],alpha,beta,eta,mu,d=2)
+                rad_counter = rad_counter + 1
+                if rad_counter % n_RT_repeat == 0 :
+                    t_rad = t_rad + t_RT_wait # wait for next cycle
+                else:
+                    t_rad = t_rad + t_RT_interval
+                    
+            # test for tumor detection
+            # generate a random uniform number between [0,1]
+            rand = np.random.random_sample()
+            # as the density of N increases the probability of detection and resection increases to 1
+            if N[i+1] >= 0.2 and detect_threshold>0: 
+                detect_threshold = -1
+                detect_size = np.sum(u[i,:])
+                detect_t = t[i]
+                detect_i = i
+                i_rad = detect_i + int(resection_to_RT_delay/dt)
+                if resect_on ==1:
+                    u[i+1,:] = gmf.resection(u[i+1,:],resect_fraction)
+                t_rad = t[i+1] + resection_to_RT_delay
+                # apply BMP4 at time of resection
+                if  BMP4_on ==1 :
+                    m[i+1] = m_init
+        
+        
+            # estimate doubling time
+            if (N[i]<0.1*k and N[i+1]>=0.1*k):
+                ip1 = i+1
+                tp1 = t[i+1]
+            if (N[i]<0.2*k and N[i+1]>=0.2*k):
+                ip2 = i+1
+                tp2 = t[i+1]
+
+            # test for death        
+            # generate a random uniform number between [0,1]
+            #rand = np.random.random_sample()
+            # as the density of N increases the probability of death increases to 1
+            #if rand < detection_death(death_threshold, N[i+1],death_sensitivity, lam) * dt:
+            #    death_threshold = -1
+        
+            i = i + 1
+            t_size = N[i]
+
+    # cut all them off at final index
+    #it_store = np.unique(np.append(np.arange(0,i,int(np.floor(dt_out/dt))),[i-1,detect_i,detect_i+1,i_rad,ip1,ip2])) # 
+    # indices for daily output and special times
+    it_store = i
+    u = u[0:it_store,:]
+    N = N[0:it_store]
+    VS = VS[0:it_store]
+    t = t[0:it_store]
+    m = m[0:it_store]
+    B = B[0:it_store]
+
+    t2 = tp2-tp1
+
+    return u,N,VS,t,m,B,detect_size,detect_t,tp1,tp2
+
+```
+
+Define a custom version of this function to make specific figs.
+```{python}
+
+from gsc_model_params import mu,eta,n,k,delta_s,delta_v,delta_m,delta_b,u_s,C,lam,Ps_max,Ps_min,psi,mv_rho_scale,ms_mv_scale,mv_rho_scale,ms_mv_scale,detect_threshold,death_threshold,detection_sensitivity,death_sensitivity,alpha_rho_scale,resection_to_RT_delay,t_RT_interval,t_RT_cycle,n_RT_repeat,n_RT_cycles,t_RT_wait,resect_fraction
+
+s0 = 0.001 # Initial GSCs
+
+detection_sensitivity = 100
+
+death_threshold = 100
+
+u0 = np.zeros(n+1)
+u0[0] = s0
+
+n0 = 0.001
+s0 = 0.01*n0 # fraction of initial tumour
+v_ratio = 1.95 # ratio between successive compartments
+v0 = ((n0-s0)*(v_ratio-1)/(v_ratio**n-1))*(v_ratio**np.arange(n))
+u0 = np.zeros(n+1)
+u0[0] = s0
+u0[1:] = v0
+
+psi_values = np.linspace(0,0.015,51)
+pro_values = np.linspace(10,80,51)
+
+# set up time grid
+t_final = 8000
+dt = 0.01
+t = np.arange(0, t_final+dt/2, dt)
+
+# we want each patient to have a unique random seed so that across all simulations they get the same series of random numbers
+random_seeds = np.arange(0,len(psi_values)*len(pro_values),1)
+
+BMP4_survival = np.zeros((len(psi_values),len(pro_values)))
+noBMP4_survival = np.zeros((len(psi_values),len(pro_values)))
+
+BMP4_final_size = np.zeros((len(psi_values),len(pro_values)))
+noBMP4_final_size = np.zeros((len(psi_values),len(pro_values)))
+
+BMP4_final_time = np.zeros((len(psi_values),len(pro_values)))
+noBMP4_final_time = np.zeros((len(psi_values),len(pro_values)))
+
+
+w = 0
+for i in range(len(psi_values)):
+    psi = psi_values[i]
+    #print("i = ",i)
+
+    for j in range(len(pro_values)):
+        #print("j = ",j)
+        rad_on = 1        
+        BMP4_on = 1
+        resect_on = 1
+
+        
+        mv = mv_rho_scale*pro_values[j]*np.ones(n)
+        ms = ms_mv_scale*mv[0]
+        mv[n-1] = 0 
+        
+        # calc alpha as proportional to rho
+        alpha = gmf.calc_alpha_from_rho(pro_values[j])
+        beta = gmf.calc_beta(alpha)
+
+        # simulate the model
+        u,N,VS,t,m,B,detect_size,detect_t,_,_ = simulate_model_my(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,random_seeds[w])
+
+            
+        #BMP4_survival[i,j] = t[-1]-detect_t
+        BMP4_final_size[i,j] = N[-1]
+        BMP4_final_time[i,j] = t[-1]
+
+        # for each of the patients run the same thing again but with no BMP4 to act as a virtual control
+        rad_on = 1
+        BMP4_on = 0
+        resect_on = 1
+            
+        mv = mv_rho_scale*pro_values[j]*np.ones(n)
+        ms = ms_mv_scale*mv[0]
+        mv[n-1] = 0 
+        
+        # calc alpha as proportional to rho 
+        alpha = gmf.calc_alpha_from_rho(pro_values[j])
+        beta = gmf.calc_beta(alpha)
+
+        u,N,VS,t,m,B,detect_size,detect_t,_,_ = simulate_model_my(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,random_seeds[w])
+            
+
+        #noBMP4_survival[i,j] = t[-1]-detect_t
+        noBMP4_final_size[i,j] = N[-1]
+        noBMP4_final_time[i,j] = t[-1]
+
+
+        w = w +1
+ 
+
+        
+        
+
+
+
+```
+
+
+# Plot days gained surface
+
+Calculate days gained surface
+
+```{python}
+#| label: fig-Calculate_days_gained
+#| fig-cap: Days gained surface
+#| fig-alt: Days gained surface
+
+#days_gained = BMP4_survival - noBMP4_survival
+#days_gained = BMP4_final_size - noBMP4_final_size
+#days_gained = BMP4_final_time - noBMP4_final_time
+#days_gained = days_gained/ noBMP4_final_time
+
+days_gained = BMP4_final_time / noBMP4_final_time
+
+X, Y = np.meshgrid(pro_values, psi_values)
+
+# Plot the surface
+fig, ax = plt.subplots(subplot_kw={"projection": "3d"}, figsize=(8,6))
+ax.plot_surface(X, Y, days_gained, cmap='viridis')
+ax.set_xlabel('Proliferation rate')
+ax.set_ylabel('$\psi$')
+ax.set_zlabel('Days gained (fold change)')
+ax.set_box_aspect(aspect=None, zoom=0.8)
+ax.set_zticks([1,1.1,1.2])
+
+# Save the figure with tight bounding box
+plt.savefig('png/days_gained.png', bbox_inches='tight', pad_inches=0.05)
+plt.savefig('svg/days_gained.svg', bbox_inches='tight', pad_inches=0.05)
+plt.savefig('../Manuscript/images/png/days_gained.png', bbox_inches='tight', pad_inches=0.05)
+
+```
+
+
+# plot some example trajectories
+
+```{python}
+
+N_save_set = []
+u_save_set = []
+t_save_set = []
+s_save_set = []
+
+N_save = [] # save the total tumor size for each virtual patient 
+u_save = [] # save the total tumor size for each virtual patient 
+t_save = [] # save the time for each virtual patient
+s_save = [] # save stem cell variable
+save_detect_size = [] # save the size of the tumor at detection
+save_detect_t = [] # save the time of detection
+
+# first simulate with no BMP4
+rad_on = 1
+BMP4_on = 0
+resect_on = 1
+
+psi = 0.15
+Ps_min = 0
+delta_b = 0.1
+
+
+t_final = 5000
+
+pro_rates_sampled = np.array([10,12,15,20,30,50])
+n_patients = len(pro_rates_sampled)
+
+for j in range(n_patients):
+    
+    mv = mv_rho_scale*pro_rates_sampled[j]*np.ones(n) 
+    ms = ms_mv_scale*mv[0]
+    mv[n-1] = 0 
+    
+    # calc alpha as proportional to rho
+    alpha = gmf.calc_alpha_from_rho(pro_rates_sampled[j])
+    beta = gmf.calc_beta(alpha)
+     
+    u,N,VS,t,m,B,detect_size,detect_t,_,_ = simulate_model_my(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,random_seeds[j])
+
+
+    
+    #surv_final[j,0] =  t[-1]-detect_t
+    N_save.append(N)
+    u_save.append(u)
+    t_save.append(t)
+    s_save.append(u[:,0])
+    save_detect_size.append(detect_size)
+    save_detect_t.append(detect_t)
+ 
+N_save_set.append(N_save)
+u_save_set.append(u_save)
+t_save_set.append(t_save)
+s_save_set.append(s_save)
+
+
+rad_on = 1
+BMP4_on = 1
+resect_on = 1
+
+alphas = np.zeros(n_patients) # to store the set of alphas used
+
+N_save = [] # save the total tumor size for each virtual patient 
+u_save = [] # save the total tumor size for each virtual patient 
+t_save = [] # save the time for each virtual patient
+s_save = [] # save stem cell variable
+save_detect_size = [] # save the size of the tumor at detection
+save_detect_t = [] # save the time of detection
+save_detect_s = [] # save s at detection
+
+for j in range(n_patients):
+    
+    np.random.seed(random_seeds[j]) # patient specific random seed
+    mv = mv_rho_scale*pro_rates_sampled[j]*np.ones(n) 
+    ms = ms_mv_scale*mv[0]
+    mv[n-1] = 0 
+    
+    # calc alpha as proportional to rho
+    alpha = gmf.calc_alpha_from_rho(pro_rates_sampled[j])
+    beta = gmf.calc_beta(alpha)
+    alphas[j] = alpha
+     
+    u,N,VS,t,m,B,detect_size,detect_t,_,_ = simulate_model_my(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,random_seeds[j])
+
+    #plt.plot(t,B)
+    #plt.axvline(detect_t+30, color='r', linestyle='--')
+    #plt.show()
+    
+    #surv_final[j,1] =  t[-1]-detect_t
+    N_save.append(N)
+    u_save.append(u)
+    t_save.append(t)
+    s_save.append(u[:,0])
+    save_detect_size.append(detect_size)
+    save_detect_t.append(detect_t)
+ 
+N_save_set.append(N_save)
+u_save_set.append(u_save)
+t_save_set.append(t_save)
+s_save_set.append(s_save)
+
+
+```
+
+Plot 3 panels
+```{python}
+
+
+colours = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:pink", "tab:gray", "tab:olive", "tab:cyan"]
+
+fig, (ax1,ax2,ax3) = plt.subplots(3, sharex=True, figsize=(8,6)) 
+q = 0 # loop through colors
+
+
+for i in range(len(pro_rates_sampled)):
+
+    ax1.plot(t_save_set[0][i],N_save_set[0][i],color=colours[q],alpha=0.5)
+    ax1.plot(t_save_set[1][i],N_save_set[1][i],'--',color=colours[q],alpha=0.5)
+
+    ax2.plot(t_save_set[0][i],s_save_set[0][i],color=colours[q],alpha=0.5)
+    ax2.plot(t_save_set[1][i],s_save_set[1][i],'--',color=colours[q],alpha=0.5)
+
+    ax3.plot(t_save_set[0][i],s_save_set[0][i]/N_save_set[0][i],color=colours[q],alpha=0.5)
+    ax3.plot(t_save_set[1][i],s_save_set[1][i]/N_save_set[1][i],'--',color=colours[q],alpha=0.5)
+
+    q = q+1
+
+    if save_detect_t[i] > 0:
+        ax1.plot(save_detect_t[i],save_detect_size[i],'r*')
+        ax2.plot(save_detect_t[i],s_save[i][t_save[i]==save_detect_t[i]],'r*')
+        ax3.plot(save_detect_t[i],s_save[i][t_save[i]==save_detect_t[i]]/save_detect_size[i],'r*')
+
+        iRT = np.where(np.abs(t_save[i]-save_detect_t[i]-resection_to_RT_delay)<dt/2)[0]
+        if len(iRT>0): # if RT starts before death
+            ax1.plot(save_detect_t[i]+resection_to_RT_delay,N_save[i][iRT],'b.')
+            ax2.plot(save_detect_t[i]+resection_to_RT_delay,s_save[i][iRT],'b.')
+            ax3.plot(save_detect_t[i]+resection_to_RT_delay,s_save[i][iRT]/N_save[i][iRT],'b.')
+
+#ax1.set_xlim([0, 8000])
+#ax1.set_ylim([0, 0.55])
+ax1.set_ylabel('Tumor size', fontsize=14)
+
+ax2.set_yscale('log')
+#ax2.set_ylim([0, 0.0012])
+ax2.set_ylabel('Stem cells', fontsize = 14)
+
+# ax3.set_ylim([0, 0.06])
+#ax3.set_yscale('log')
+ax3.set_xlabel('Time (days)', fontsize = 14)
+ax3.set_ylabel('Stem cell fraction', fontsize = 14)
+
+
+# Increase font size for x-ticks and y-ticks
+ax1.tick_params(axis='both', which='major', labelsize=14)
+ax2.tick_params(axis='both', which='major', labelsize=14)
+ax3.tick_params(axis='both', which='major', labelsize=14)
+
+#fig.suptitle("Resection vs resection + RT: N, s and fraction of GSCs")
+# Save the figure with tight bounding box
+plt.savefig('png/example_sims.png', bbox_inches='tight', pad_inches=0.05)
+plt.savefig('svg/example_sims.svg', bbox_inches='tight', pad_inches=0.05)
+plt.show()
+```
+
+Plot 2 panels
+
+```{python}
+
+
+colours = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:pink", "tab:gray", "tab:olive", "tab:cyan"]
+
+fig, (ax1,ax3) = plt.subplots(2, sharex=True, figsize=(8,6)) 
+q = 0 # loop through colors
+
+
+for i in range(len(pro_rates_sampled)):
+
+    ax1.plot(t_save_set[0][i],N_save_set[0][i],color=colours[q],alpha=0.5)
+    ax1.plot(t_save_set[1][i],N_save_set[1][i],'--',color=colours[q],alpha=0.5)
+
+    ax3.plot(t_save_set[0][i],s_save_set[0][i]/N_save_set[0][i],color=colours[q],alpha=0.5)
+    ax3.plot(t_save_set[1][i],s_save_set[1][i]/N_save_set[1][i],'--',color=colours[q],alpha=0.5)
+
+    q = q+1
+
+    if save_detect_t[i] > 0:
+        ax1.plot(save_detect_t[i],save_detect_size[i],'r*')
+        ax3.plot(save_detect_t[i],s_save[i][t_save[i]==save_detect_t[i]]/save_detect_size[i],'r*')
+
+        iRT = np.where(np.abs(t_save[i]-save_detect_t[i]-resection_to_RT_delay)<dt/2)[0]
+        if len(iRT>0): # if RT starts before death
+            ax1.plot(save_detect_t[i]+resection_to_RT_delay,N_save[i][iRT],'b.')
+            ax3.plot(save_detect_t[i]+resection_to_RT_delay,s_save[i][iRT]/N_save[i][iRT],'b.')
+
+#ax1.set_xlim([0, 8000])
+#ax1.set_ylim([0, 0.55])
+ax1.set_ylabel('Tumor size', fontsize=14)
+
+
+# ax3.set_ylim([0, 0.06])
+#ax3.set_yscale('log')
+ax3.set_xlabel('Time (days)', fontsize = 14)
+ax3.set_ylabel('Stem cell fraction', fontsize = 14)
+
+
+# Increase font size for x-ticks and y-ticks
+ax1.tick_params(axis='both', which='major', labelsize=14)
+
+ax3.tick_params(axis='both', which='major', labelsize=14)
+
+#fig.suptitle("Resection vs resection + RT: N, s and fraction of GSCs")
+# Save the figure with tight bounding box
+plt.savefig('png/example_sims.png', bbox_inches='tight', pad_inches=0.05)
+plt.savefig('svg/example_sims.svg', bbox_inches='tight', pad_inches=0.05)
+plt.show()
+```

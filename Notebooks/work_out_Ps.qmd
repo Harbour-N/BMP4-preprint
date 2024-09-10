@@ -1,0 +1,182 @@
+---
+title: Work out Ps
+description: Work out what are reasonable values for Ps_max 
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+# Import packages
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+from numba import jit
+```
+
+# import functions
+all functions are in: "notebooks/gsc_model_functions.py"
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+# Calculate Ps_max
+
+For this we need  to load in the patient data and calculate the distribution params
+```{python}
+#| label: Load_the_real_data
+
+# load in the patient survival data
+historic_df = pd.read_csv("Rho_D_data.csv")
+censored_str = "Censorship (1=censored)"
+survival_str = "Overall Survival"
+# only keep patients that weren't censored
+historic_df = historic_df[historic_df[censored_str] == 0]
+# cut off patients that had very high proliferation rate
+historic_df = historic_df[historic_df["PIHNA rho"] < 100 ] 
+historic_df[censored_str] = True
+
+# fit distribution to the data
+dist_name = 'lognorm'  # Replace with the desired distribution name
+dist = getattr(stats, dist_name)
+params = dist.fit(historic_df["PIHNA rho"])
+    
+shape = params[0]
+loc = params[1]
+scale = params[-1]
+```
+
+
+Simulate model and calculate the fraction of GSCs to work out reasonable values for Ps.
+
+```{python}
+#| label: simulate-model
+
+### import params
+from gsc_model_params import *
+
+### override some parameters ###
+# fixed proliferation rate
+# use the mean of the fitted distribution
+pro_rate = loc+scale*np.exp(shape**2/2)
+
+lam = 0 # max probability rate in detection & death, in this simulation we do want to simulate detection/death so set it to 0
+
+s0 = 0.001 # initial GSCs
+
+u0 = np.zeros((1,n+1))
+u0[0] = s0
+
+dt = 0.1
+rad_on = 0 # no RT
+BMP4_on = 0 # no BMP4
+resect_on = 0   # no resection    
+
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# calc alpha as proportional to rho
+alpha = gmf.calc_alpha_from_rho(pro_rate)
+beta = gmf.calc_beta(alpha)
+
+Ps_list = np.linspace(0.505,0.9,11) # try a range of Ps_max values
+
+save_frac_GSC = np.zeros(len(Ps_list)) # store frac of GSCs at steady state for each value of Ps
+save_final_N = np.zeros(len(Ps_list)) # store the total tumour size at the final time to ensure carrying capacity has been reached
+t_final = 10000
+
+j = 0
+for Ps_max in Ps_list:
+    u,N,VS,t,m,B,save_size,save_t,_,_ = gmf.simulate_model(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,j)
+    save_frac_GSC[j] = u[-1,0]/N[-1]
+    save_final_N[j] = N[-1]
+    j = j + 1
+
+```
+
+Plot the results of frac GSCs and total tumour volume together
+```{python}
+#| label: fig-Ps_max_value_and_N
+#| fig-cap: caption.
+#| fig-alt: alt text.
+
+fig, (ax1,ax2) = plt.subplots(2, sharex=True) 
+
+ax1.plot(Ps_list,save_final_N,'x-')
+ax1.set(ylabel="N")
+ax1.legend(['N'])
+
+ax2.plot(Ps_list,save_frac_GSC,'o-')
+ax2.set(xlabel="Ps")
+ax2.set(ylabel="Frac of GSCs")
+ax2.legend(['GSC'])
+
+fig.suptitle("N and fraction of GSCs at steady state")
+plt.show()
+
+```
+
+plot only the frac of GSCs
+
+```{python}
+#| label: fig-Ps_max_value_GSC_frac
+#| fig-cap: As We increase $P_s$ the fraction of GSCs increases.
+#| fig-alt: alt text.
+plt.plot(Ps_list,save_frac_GSC,'o-')
+plt.axhspan(0.01, 0.03, facecolor ='r', alpha = 0.4) 
+plt.xlabel("$P_s$", fontsize=14)
+plt.ylabel("Frac of GSCs", fontsize=14)
+plt.title("Fraction of GSCs at steady state", fontsize=14)
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12)
+plt.tight_layout()
+#plt.savefig("../SMB_figs/Ps_max_value_GSC_frac.svg")
+plt.show()
+
+```
+
+
+For our chosen value of Ps_max simulate the model 
+```{python}
+#| label: fig-simulate_model_Ps_max_value
+#| fig-cap: caption
+#| fig-alt: alt text
+
+
+Ps_max = 0.56
+t_final = 2000
+u,N,VS,t,m,B,save_size,save_t,_,_ = gmf.simulate_model(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,0)
+
+fig, (ax1,ax2) = plt.subplots(2, sharex=True) 
+
+ax1.plot(t,N)
+ax1.plot(t,u[:,])
+ax1.set(ylabel="Tumour cell count / density")
+fig.suptitle("Simulated evolution of tumour")
+
+ax2.set(ylabel="Frac of GSCs")
+ax2.plot(t,u[:,0]/N)
+for i in range(n+1) : 
+    ax2.plot(t,u[:,i]/N)
+ax2.set(xlabel="Time (days)")
+
+```

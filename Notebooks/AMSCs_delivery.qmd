@@ -1,0 +1,209 @@
+---
+title: Phase 2 trial stratified by proliferation rate
+description: Example phase 2 virtual trial for BMP4 + RT
+format:
+    html:
+        code-fold: true
+        toc: true
+        code-tools: true
+        embed-resources: true
+        date-modified: last-modified
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+jupyter: python3
+---
+
+
+
+```{python}
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+from numba import jit
+
+```
+
+
+Simulate AMSCs BMP4 delivery sub-model to get an idea of BMP4 concetration in the clinical trial.  
+
+- The AMSCs decay after about 2 weeks.
+- BMP4 peaks around 2 days and then decays
+
+```{python}
+
+# Import params for AMSC / BMP4
+from gsc_model_params import C, delta_m, delta_b, u_s,n,Ps_max,Ps_min,k,delta_s,delta_v
+
+
+
+t_final = 20
+dt = 0.01
+t = np.arange(0, t_final+dt/2, dt) # arange(a,b,c) uses the open interval [a,b) with steps c
+nt = len(t)
+m = np.zeros(nt)
+B = np.zeros(nt)
+u = np.zeros((nt,n+1))
+
+ms = 65
+mv = 65
+psi = 2
+
+
+m[0] = 30
+B[0] = 0
+
+for i in range(len(t)-1):
+
+    m[i+1] = m[i] + dt * (- delta_m * m[i])
+    B[i+1] = B[i] + dt * (C * m[i] - u_s*B[i]*u[i,0] - delta_b*B[i])
+
+
+plt.plot(t, B)
+plt.plot(t, m)
+plt.xlabel('Time (days)')
+plt.ylabel('Concentration')
+plt.title("No inclusion of GSC uptake but gives a rough idea of BMP4 concentration")
+plt.legend(['BMP4', 'AMSCs'])
+plt.show()
+```
+
+
+plot a comparison of the different delivery methods
+
+```{python}
+
+# Import params for AMSC / BMP4
+from gsc_model_params import C, delta_m, delta_b, u_s,n,Ps_max,Ps_min,k,delta_s,delta_v
+#B_background = 7.86
+B_background = 0
+
+delta_m = 0.25
+
+t_RT_interval = 1 # time in days between RT doses
+t_RT_cycle = 7 # time in days between cycles
+n_RT_repeat = 5 # number of doses on RT (remainder is off)
+n_RT_cycles = 6 # number of cycles to repeat
+t_RT_wait = t_RT_cycle - t_RT_interval*n_RT_repeat # time to wait for next cycle
+resection_to_RT_delay = 30 # days from resection to RT start
+t_rad = 0 + resection_to_RT_delay # start of RT
+rad_counter = 0
+
+
+t_final = 100 
+dt = 0.01
+t = np.arange(0, t_final+dt/2, dt) # arange(a,b,c) uses the open interval [a,b) with steps c
+nt = len(t)
+m_OS = np.zeros(nt)
+B_OS = np.zeros(nt)
+
+m_p = np.zeros(nt)
+B_p = np.zeros(nt)
+
+m_const = np.ones(nt)*13.22
+B_const = np.zeros(nt)
+
+m_shift = np.zeros(nt)
+B_shift = np.zeros(nt)
+
+ms = 65
+mv = 65
+psi = 2
+
+
+m_init = 225
+m_pulse = 37.5
+
+m_OS[0] = m_init
+
+B_OS[0] = B_background
+B_p[0] = B_background
+B_const[0] = B_background
+B_shift[0] = B_background
+
+#m_p[0] = 4.2858
+
+dummy = 1
+stop = 0
+
+for i in range(len(t)-1):
+
+    m_OS[i+1] = m_OS[i] + dt * (- delta_m * m_OS[i])
+    B_OS[i+1] = B_OS[i] + dt * (delta_b*B_background + C * m_OS[i] - delta_b*B_OS[i])
+
+
+    m_p[i+1] = m_p[i] + dt * (- delta_m * m_p[i])
+    B_p[i+1] = B_p[i] + dt * (delta_b*B_background + C * m_p[i] - delta_b*B_p[i])
+
+    if abs(t[i]-t_rad) < dt/2 and rad_counter % n_RT_repeat == 0 and rad_counter < n_RT_repeat*n_RT_cycles and i !=0:
+        m_p[i+1] = m_p[i] + m_pulse
+
+    if rad_counter >= n_RT_repeat*n_RT_cycles: # once RT has ended then constant delivery is stopped and MSCs start decaying
+        m_const[i+1] = m_const[i] + dt * (- delta_m * m_const[i])
+
+    B_const[i+1] = B_const[i] + dt * (delta_b*B_background + C * m_const[i] - delta_b*B_const[i])
+
+    m_shift[i+1] = m_shift[i] + dt * (- delta_m * m_shift[i])
+    B_shift[i+1] = B_shift[i] + dt * (delta_b*B_background + C * m_shift[i] - delta_b*B_shift[i])
+    if dummy==-1293194 and stop ==0:
+        stop = 1
+        m_shift[i+1] = m_init
+
+    # apply radiation
+    if abs(t[i]-t_rad) < dt/2 and rad_counter < n_RT_repeat*n_RT_cycles:
+        if dummy ==1:
+            dummy = -1293194
+            plt.axvline(x=t_rad, color='r', linestyle='--', alpha=0.2, linewidth=1.5, label='RT')
+        else:
+            plt.axvline(x=t_rad, color='r', linestyle='--', alpha=0.2, linewidth=1.5)
+        rad_counter = rad_counter + 1
+        if rad_counter % n_RT_repeat == 0 :
+            t_rad = t_rad + t_RT_wait # wait for next cycle
+        else:
+            t_rad = t_rad + t_RT_interval
+
+plt.plot(t, B_OS, label='Single', color='tab:blue')
+plt.plot(t, B_p, label='Periodic', color='tab:green')
+plt.plot(t, B_const, label='Constant', color='tab:red')
+plt.plot(t, B_shift, label='Shifted', color = 'tab:orange')
+plt.xlabel('Time (days)', fontsize=14)
+plt.ylabel('Concentration', fontsize=14)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+#plt.title("No inclusion of GSC uptake but gives a rough idea of BMP4 concentration")
+plt.legend(fontsize=14)
+plt.savefig('png/BMP4_delivery_schedule.png')
+#plt.savefig('../Manuscript/images/png/BMP4_delivery_schedule.png')
+plt.show()
+
+
+# integrate the BMP4 concentration to get the total BMP4 delivered
+print("average BMP4 obsereved by OS: ", np.trapz(B_OS, t) / t[-1])
+print("average BMP4 obsereved by P: ", np.trapz(B_p, t) / t[-1])
+print("average BMP4 obsereved by constant: ", np.trapz(B_const, t) / t[-1] )
+print("average BMP4 in RT assay = 10")
+
+'''
+
+plt.plot(t, m_OS, label='Single', color='tab:blue')
+plt.plot(t, m_p, label='Periodic', color='tab:green')
+plt.plot(t, m_const, label='Constant', color='tab:red')
+plt.plot(t, m_shift, label='Shifted', color = 'tab:orange')
+plt.xlabel('Time (days)', fontsize=14)
+plt.ylabel('Concentration', fontsize=14)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+#plt.title("No inclusion of GSC uptake but gives a rough idea of BMP4 concentration")
+plt.legend(fontsize=14)
+plt.show()
+
+
+print("Total BMP4 obsereved by OS: ", np.trapz(m_OS, t) / t[-1])
+print("Total BMP4 obsereved by P: ", np.trapz(m_p, t) / t[-1])
+print("Total BMP4 obsereved by constant: ", np.trapz(m_const, t) / t[-1] )
+'''
+
+```

@@ -1,0 +1,179 @@
+---
+title: Doubling time
+description: Work out reasonable proliferation rates for the cell lines based on doubling times provided
+authors:
+    - name: Nicholas Harbour
+    - name: Markus Owen
+format: 
+    html:
+        embed-resources: true
+        code-fold: true
+        code-tools: true
+        highlight-style: atom-one
+        number-sections: true
+        toc: true
+        toc-depth: 3
+        date: now
+        date-modified: last-modified
+        date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+# Import packages
+
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+import matplotlib.colors as mcolors
+
+```
+
+# import functions
+
+all functions are in: "notebooks/gsc_model_functions.py"
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+# Load in the doubling time data
+
+```{python}
+
+doubling_time_data = pd.read_csv("Data/Growth_rate_raw_data.csv")
+
+GMB1A_doubling_time = doubling_time_data["Baseline doubling time hrs"][doubling_time_data["Cells"] == "GBM1A"].values[0]
+
+```
+
+doubling times:
+
+The amount of cell growth can be calculated from the doubling time as:
+
+$$
+    N(t) = N_0 2^{t/T_d}
+$$
+
+where $N_0$ is the initial number of cells, $t$ is the time and $T_d$ is the doubling time.
+
+With a doubling time of 54.71329 hours the expected growth in 48 hours is:
+
+```{python}
+
+t = 48
+T = GMB1A_doubling_time
+N0 = 1
+
+N = N0*2**(t/T)
+
+print("Expected fold growth in 48 hours (GBM1A): ", N)
+
+```
+
+If we have an initial tumour size of 0.1 (as we do in the RT assay) we would expect the final tumour size after 48hrs to be
+
+```{python}
+
+N0 = 0.1
+N = N0*2**(t/T)
+print("final tumour size after 48 hours, from N0 =0.1 (GBM1A): ", N)
+```
+
+## Work out $m_i$ for each cell line based on doubling time
+
+Thanks to Markus the Simulate model handily returns an estimate for the doubling time. tp1 = time to reach 0.1k and tp2 = time to reach 0.2k. The doubling time can be estimated as: tp2 - tp1
+
+### Set params
+
+```{python}
+
+### import params
+from gsc_model_params import *
+
+n_patients = 101
+
+pro_rates_sampled = np.linspace(60,80,n_patients) # sample a range of proliferation rates
+
+t_final = 8000
+
+dt = 0.005
+
+s0 = 0.01
+u0 = 0
+
+psi = 2
+
+Ps_max = 1
+Ps_min = 0
+
+max_size = 0.3
+
+
+N_save = [] # save the total tumor size for each virtual patient 
+u_save = [] # save the total tumor size for each virtual patient 
+t_save = [] # save the time for each virtual patient
+s_save = [] # save stem cell variable
+save_detect_size = [] # save the size of the tumor at detection
+save_detect_t = [] # save the time of detection
+save_detect_s = [] # save s at detection
+
+N_save_set = []
+u_save_set = []
+t_save_set = []
+s_save_set = []
+
+
+tp1 = np.zeros(n_patients)
+tp2 = np.zeros(n_patients)
+
+
+for j in range(n_patients):
+    
+    mv = mv_rho_scale*pro_rates_sampled[j]*np.ones(n) 
+    ms = ms_mv_scale*mv[0]
+    mv[n-1] = 0 
+    
+    # calc alpha as proportional to rho
+    alpha = gmf.calc_alpha_from_rho(pro_rates_sampled[j])
+    beta = gmf.calc_beta(alpha)
+
+
+    u,N,VS,t,tp1[j],tp2[j] = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+    
+
+    N_save.append(N)
+    u_save.append(u)
+    t_save.append(t)
+    s_save.append(u[:,0])
+
+
+N_save_set.append(N_save)
+u_save_set.append(u_save)
+t_save_set.append(t_save)
+s_save_set.append(s_save)
+
+
+```
+
+Plot $m_i$ against doubling time
+
+```{python}
+
+# These are doubling times in days
+doubling_times = tp2 - tp1
+
+plt.plot(doubling_times,pro_rates_sampled,'*')
+plt.xlabel('T_2 [days]')
+plt.ylabel('rho ($m_i$) [1/year]')
+plt.axvline(x=GMB1A_doubling_time/24, color='r', linestyle='--')
+plt.show()
+
+
+```

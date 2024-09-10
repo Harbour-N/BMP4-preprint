@@ -1,0 +1,958 @@
+---
+title: RT data analysis
+description: Load in the data for all cell lines and parameterise
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    code-tools: true
+    highlight-style: atom-one
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+
+# Import packages
+
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+import matplotlib.colors as mcolors
+from scipy.optimize import curve_fit
+```
+
+Import functions
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+# Load in the data
+
+```{python}
+#| label: Load in the data
+
+rt_df = pd.read_csv("Data/RAW DATA- RT.csv")
+rt_df.head()
+
+
+
+
+```
+
+This is the raw data and does not have plating effecinecy (pe) which is given by ncolonies/ncells, so lets add this column
+
+```{python}
+#| label: Add pe to df
+
+rt_df["pe"] =rt_df["ncolonies"]/ rt_df["ncells"]
+rt_df.head()
+
+```
+
+
+identify the cell lines we have 
+```{python}
+#| label: Identify cell lines
+
+clines = rt_df["cline"].unique()
+print("Cell lines")
+print(clines)
+
+```
+
+# Normalise the data
+
+We normalise the data:
+- Only inclide up to dose 6 Gy
+- Only include replicates that have measurement at 0,2,4,6 Gy
+- Normalise by rep, group (by survival at dose 0).
+
+```{python}
+#| label: Normalise the data
+
+# filter out doses above 6Gy
+rt_df = rt_df[rt_df["dose"] <= 6]
+
+# initialisea column with all 0s
+rt_df["norm_pe"] = 0 
+
+
+for cline in clines:
+
+    # get a specific cell line
+    #test = rt_df[rt_df["cline"] == cline]
+
+   
+    # keep only replicates that have measurements at 0,2,4, (and/or 5),6 Gy
+    keep_reps = []
+    for rep in rt_df[rt_df["cline"] == cline]["rep"].unique():
+        if len(rt_df[(rt_df["cline"] == cline) & (rt_df["rep"] == rep) ]["dose"].unique()) >= 4:
+            keep_reps.append(rep)
+
+
+    rt_df[(rt_df["cline"] == cline)] = rt_df[(rt_df["cline"] == cline) & (rt_df['rep'].isin(keep_reps))]
+  
+
+    # extract unique groups for each cline
+    groups = rt_df[rt_df["cline"] == cline]["group"].unique()
+
+    for rep in rt_df[rt_df["cline"] == cline]["rep"].unique():
+        for group in groups:
+            # Filter the DataFrame for the current replicate and group
+            temp = rt_df[(rt_df["cline"] == cline) & (rt_df["rep"] == rep) & (rt_df["group"] == group)]
+        
+            # Calculate the mean of 'pe' at dose 0 for normalization
+            mean_pe_dose_0 = temp[temp["dose"] == 0]["pe"].mean()
+        
+            # Normalize 'pe' and update 'norm_pe' in the original DataFrame
+            rt_df.loc[(rt_df["rep"] == rep) & (rt_df["group"] == group) & (rt_df["cline"] == cline) , "norm_pe"] = temp["pe"] / mean_pe_dose_0
+
+
+rt_df = rt_df.dropna() # remove Nans
+print(rt_df)
+
+# Save the updated DataFrame to a new file if needed
+rt_df.to_csv('Data/rt_df.csv', index=False)
+
+```
+
+
+# plot survival (Raw data)
+
+We will plot the survival for the cell lines which we have doubling times for as well
+
+## GBM1a (Male Primary)
+
+```{python}
+
+cline = "GBM1a"
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.show()
+```
+
+
+## QNS120 (Male Primary)
+
+```{python}
+
+cline = "QNS120"
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.show()
+```
+
+
+## QNS108 (Male Primary)
+
+```{python}
+
+cline = "QNS108"
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.show()
+```
+
+
+## QNS315 (Female Primary)
+
+```{python}
+
+cline = "QNS315"
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.show()
+```
+
+
+## QNS522b 
+QNS522 is a male primary (not sure if this is the same person?)
+
+```{python}
+
+cline = "QNS522b "
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.show()
+```
+
+
+## QNS657 (Female primary)
+
+
+```{python}
+
+cline = "QNS657"
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.show()
+```
+
+
+# Plot survival LQ model fits
+
+## GBM1a (Male primary)
+```{python}
+#| warning: false
+
+cline = "GBM1a"
+
+# Define the linear-quadratic model
+def LQ_model(dose, alpha, beta):
+    return np.exp(-alpha * dose - beta * dose**2)
+
+def LQ_model_fixed_ratio(dose, alpha):
+    beta = alpha / 10
+    return np.exp(-alpha * dose - beta * dose**2)
+
+# Fit the model to the data CTRL case
+popt_ctrl, pcov_ctrl = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+popt_ctrl_fixed, pcov_ctrl_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Fit the model to the data BMP4 case
+popt_BMP4, pcov_BMP4 = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+popt_BMP4_fixed, pcov_BMP4_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Extract the fitted parameters CTRL case
+alpha_CTRL, beta_CTRL = popt_ctrl
+print(f"Fitted parameters for CTRL case: alpha = {alpha_CTRL}, beta = {beta_CTRL}")
+print(f"alpha/beta = {alpha_CTRL/beta_CTRL}")
+
+alpha_CTRL_fixed= popt_ctrl_fixed
+print(f"Fitted parameters for CTRL case ith alpha/beta =10 fixed: alpha = {alpha_CTRL_fixed}, beta = {alpha_CTRL_fixed/10}")
+
+# Extract the fitted parameters BMP4 case
+alpha_BMP4, beta_BMP4 = popt_BMP4
+print(f"Fitted parameters for BMP4 case: alpha = {alpha_BMP4}, beta = {beta_BMP4}")
+print(f"alpha/beta = {alpha_BMP4/beta_BMP4}")
+
+alpha_BMP4_fixed= popt_BMP4_fixed
+print(f"Fitted parameters for BMP4 case ith alpha/beta =10 fixed: alpha = {alpha_BMP4_fixed}, beta = {alpha_BMP4_fixed/10}")
+
+
+```
+
+Plot the results of the LQ fit
+```{python}
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model(doses,alpha_CTRL,beta_CTRL))
+plt.plot(doses,LQ_model(doses,alpha_BMP4,beta_BMP4))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-LQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()
+
+```
+
+With alpha / beta fixed to 10
+```{python}
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model_fixed_ratio(doses,alpha_CTRL_fixed))
+plt.plot(doses,LQ_model_fixed_ratio(doses,alpha_BMP4_fixed))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-LQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()
+
+```
+
+
+## QNS120 (Male primary)
+```{python}
+#| warning: false
+
+cline = "QNS120"
+
+# Fit the model to the data CTRL case
+popt_ctrl, pcov_ctrl = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+popt_ctrl_fixed, pcov_ctrl_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Fit the model to the data BMP4 case
+popt_BMP4, pcov_BMP4 = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+popt_BMP4_fixed, pcov_BMP4_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Extract the fitted parameters CTRL case
+alpha_CTRL, beta_CTRL = popt_ctrl
+print(f"Fitted parameters for CTRL case: alpha = {alpha_CTRL}, beta = {beta_CTRL}")
+print(f"alpha/beta = {alpha_CTRL/beta_CTRL}")
+
+alpha_CTRL_fixed= popt_ctrl_fixed
+print(f"Fitted parameters for CTRL case ith alpha/beta =10 fixed: alpha = {alpha_CTRL_fixed}, beta = {alpha_CTRL_fixed/10}")
+
+# Extract the fitted parameters BMP4 case
+alpha_BMP4, beta_BMP4 = popt_BMP4
+print(f"Fitted parameters for BMP4 case: alpha = {alpha_BMP4}, beta = {beta_BMP4}")
+print(f"alpha/beta = {alpha_BMP4/beta_BMP4}")
+
+alpha_BMP4_fixed= popt_BMP4_fixed
+print(f"Fitted parameters for BMP4 case ith alpha/beta =10 fixed: alpha = {alpha_BMP4_fixed}, beta = {alpha_BMP4_fixed/10}")
+
+
+```
+
+Plot the results of the LQ fit
+```{python}
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model(doses,alpha_CTRL,beta_CTRL))
+plt.plot(doses,LQ_model(doses,alpha_BMP4,beta_BMP4))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-LQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()
+
+```
+
+
+With alpha / beta fixed to 10
+```{python}
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model_fixed_ratio(doses,alpha_CTRL_fixed))
+plt.plot(doses,LQ_model_fixed_ratio(doses,alpha_BMP4_fixed))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-LQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()
+
+```
+
+## QNS108 (Male primary)
+```{python}
+#| warning: false
+
+cline = "QNS108"
+
+# Fit the model to the data CTRL case
+popt_ctrl, pcov_ctrl = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+popt_ctrl_fixed, pcov_ctrl_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Fit the model to the data BMP4 case
+popt_BMP4, pcov_BMP4 = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+popt_BMP4_fixed, pcov_BMP4_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Extract the fitted parameters CTRL case
+alpha_CTRL, beta_CTRL = popt_ctrl
+print(f"Fitted parameters for CTRL case: alpha = {alpha_CTRL}, beta = {beta_CTRL}")
+print(f"alpha/beta = {alpha_CTRL/beta_CTRL}")
+
+alpha_CTRL_fixed= popt_ctrl_fixed
+print(f"Fitted parameters for CTRL case ith alpha/beta =10 fixed: alpha = {alpha_CTRL_fixed}, beta = {alpha_CTRL_fixed/10}")
+
+# Extract the fitted parameters BMP4 case
+alpha_BMP4, beta_BMP4 = popt_BMP4
+print(f"Fitted parameters for BMP4 case: alpha = {alpha_BMP4}, beta = {beta_BMP4}")
+print(f"alpha/beta = {alpha_BMP4/beta_BMP4}")
+
+alpha_BMP4_fixed= popt_BMP4_fixed
+print(f"Fitted parameters for BMP4 case ith alpha/beta =10 fixed: alpha = {alpha_BMP4_fixed}, beta = {alpha_BMP4_fixed/10}")
+
+
+```
+
+Plot the results of the LQ fit
+```{python}
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model(doses,alpha_CTRL,beta_CTRL))
+plt.plot(doses,LQ_model(doses,alpha_BMP4,beta_BMP4))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-LQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()
+
+```
+
+With alpha / beta fixed to 10
+```{python}
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model_fixed_ratio(doses,alpha_CTRL_fixed))
+plt.plot(doses,LQ_model_fixed_ratio(doses,alpha_BMP4_fixed))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-LQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()
+
+```
+
+## QNS315 (Female primary)
+```{python}
+#| warning: false
+
+cline = "QNS315"
+
+# Fit the model to the data CTRL case
+popt_ctrl, pcov_ctrl = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+popt_ctrl_fixed, pcov_ctrl_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Fit the model to the data BMP4 case
+popt_BMP4, pcov_BMP4 = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+popt_BMP4_fixed, pcov_BMP4_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Extract the fitted parameters CTRL case
+alpha_CTRL, beta_CTRL = popt_ctrl
+print(f"Fitted parameters for CTRL case: alpha = {alpha_CTRL}, beta = {beta_CTRL}")
+print(f"alpha/beta = {alpha_CTRL/beta_CTRL}")
+
+alpha_CTRL_fixed= popt_ctrl_fixed
+print(f"Fitted parameters for CTRL case ith alpha/beta =10 fixed: alpha = {alpha_CTRL_fixed}, beta = {alpha_CTRL_fixed/10}")
+
+# Extract the fitted parameters BMP4 case
+alpha_BMP4, beta_BMP4 = popt_BMP4
+print(f"Fitted parameters for BMP4 case: alpha = {alpha_BMP4}, beta = {beta_BMP4}")
+print(f"alpha/beta = {alpha_BMP4/beta_BMP4}")
+
+alpha_BMP4_fixed= popt_BMP4_fixed
+print(f"Fitted parameters for BMP4 case ith alpha/beta =10 fixed: alpha = {alpha_BMP4_fixed}, beta = {alpha_BMP4_fixed/10}")
+
+
+```
+
+Plot the results of the LQ fit
+```{python}
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model(doses,alpha_CTRL,beta_CTRL))
+plt.plot(doses,LQ_model(doses,alpha_BMP4,beta_BMP4))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-LQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()
+
+```
+
+With alpha / beta fixed to 10
+```{python}
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model_fixed_ratio(doses,alpha_CTRL_fixed))
+plt.plot(doses,LQ_model_fixed_ratio(doses,alpha_BMP4_fixed))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-LQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()
+
+```
+
+
+## QNS657 (Female primary)
+```{python}
+#| warning: false
+
+cline = "QNS657"
+
+# Fit the model to the data CTRL case
+popt_ctrl, pcov_ctrl = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+popt_ctrl_fixed, pcov_ctrl_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Fit the model to the data BMP4 case
+popt_BMP4, pcov_BMP4 = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+popt_BMP4_fixed, pcov_BMP4_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Extract the fitted parameters CTRL case
+alpha_CTRL, beta_CTRL = popt_ctrl
+print(f"Fitted parameters for CTRL case: alpha = {alpha_CTRL}, beta = {beta_CTRL}")
+print(f"alpha/beta = {alpha_CTRL/beta_CTRL}")
+
+alpha_CTRL_fixed= popt_ctrl_fixed
+print(f"Fitted parameters for CTRL case ith alpha/beta =10 fixed: alpha = {alpha_CTRL_fixed}, beta = {alpha_CTRL_fixed/10}")
+
+# Extract the fitted parameters BMP4 case
+alpha_BMP4, beta_BMP4 = popt_BMP4
+print(f"Fitted parameters for BMP4 case: alpha = {alpha_BMP4}, beta = {beta_BMP4}")
+print(f"alpha/beta = {alpha_BMP4/beta_BMP4}")
+
+alpha_BMP4_fixed= popt_BMP4_fixed
+print(f"Fitted parameters for BMP4 case ith alpha/beta =10 fixed: alpha = {alpha_BMP4_fixed}, beta = {alpha_BMP4_fixed/10}")
+
+
+```
+
+Plot the results of the LQ fit
+```{python}
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model(doses,alpha_CTRL,beta_CTRL))
+plt.plot(doses,LQ_model(doses,alpha_BMP4,beta_BMP4))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-LQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()
+
+```
+
+With alpha / beta fixed to 10
+```{python}
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model_fixed_ratio(doses,alpha_CTRL_fixed))
+plt.plot(doses,LQ_model_fixed_ratio(doses,alpha_BMP4_fixed))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-LQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()
+
+```
+
+
+# Fit DLQ
+
+Now fit the Dual linear quadratic model to get an estimate of the fraction of GSCs 
+
+## GBM1a (Male primary)
+```{python}
+
+cline = "GBM1a"
+
+gamma = 0.1376 # Radioprotection of GSCs (doi:10.1158/0008-5472.CAN-12-3429)
+
+# Fit the model to the data CTRL case
+#popt_ctrl, pcov_ctrl = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+# Fit the model to the data CTRL case with alpha/beta fixed to 10
+popt_ctrl_fixed, pcov_ctrl_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Extract the fitted parameters CTRL case
+#alpha, beta = popt_ctrl
+#alpha = alpha / gamma
+#beta = beta / gamma
+
+alpha = popt_ctrl_fixed
+alpha = alpha / gamma
+beta = alpha / 10
+
+# Function to evaluate DLQ model
+def DLQ_model(dose,F):
+
+    return F*np.exp(gamma*(-alpha * dose - beta * dose**2)) + (1-F)*np.exp(-alpha * dose - beta * dose**2)
+
+
+# Fit the model to the data BMP4 case to get an estimate of F
+popt_BMP4, pcov_BMP4 = curve_fit(DLQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0], [ 1]))
+
+# Extract the param of interest
+F = popt_BMP4
+print(f"Fraction of GSC F = {F}")
+print(f"Fitted parameters for CTRL case: alpha = {alpha}, beta = {beta}")
+print(f"alpha/beta = {alpha/beta}")
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model(doses,alpha*gamma,beta*gamma))
+plt.plot(doses,DLQ_model(doses,F))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-DLQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()     
+
+```
+
+
+## QNS120 (Male primary)
+```{python}
+
+cline = "QNS120"
+
+# Fit the model to the data CTRL case
+#popt_ctrl, pcov_ctrl = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+# Fit the model to the data CTRL case with alpha/beta fixed to 10
+popt_ctrl_fixed, pcov_ctrl_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Extract the fitted parameters CTRL case
+#alpha, beta = popt_ctrl
+#alpha = alpha / gamma
+#beta = beta / gamma
+
+alpha = popt_ctrl_fixed
+alpha = alpha / gamma
+beta = alpha / 10
+
+# Function to evaluate DLQ model
+def DLQ_model(dose,F):
+
+    return F*np.exp(gamma*(-alpha * dose - beta * dose**2)) + (1-F)*np.exp(-alpha * dose - beta * dose**2)
+
+
+# Fit the model to the data BMP4 case to get an estimate of F
+popt_BMP4, pcov_BMP4 = curve_fit(DLQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0], [ 1]))
+
+# Extract the param of interest
+F = popt_BMP4
+print(f"Fraction of GSC F = {F}")
+print(f"Fitted parameters for CTRL case: alpha = {alpha}, beta = {beta}")
+print(f"alpha/beta = {alpha/beta}")
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model(doses,alpha*gamma,beta*gamma))
+plt.plot(doses,DLQ_model(doses,F))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-DLQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()     
+
+```
+
+
+## QNS108 (Male primary)
+```{python}
+
+cline = "QNS108"
+
+# Fit the model to the data CTRL case
+#popt_ctrl, pcov_ctrl = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+# Fit the model to the data CTRL case with alpha/beta fixed to 10
+popt_ctrl_fixed, pcov_ctrl_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Extract the fitted parameters CTRL case
+#alpha, beta = popt_ctrl
+#alpha = alpha / gamma
+#beta = beta / gamma
+
+alpha = popt_ctrl_fixed
+alpha = alpha / gamma
+beta = alpha / 10
+
+# Function to evaluate DLQ model
+def DLQ_model(dose,F):
+
+    return F*np.exp(gamma*(-alpha * dose - beta * dose**2)) + (1-F)*np.exp(-alpha * dose - beta * dose**2)
+
+
+# Fit the model to the data BMP4 case to get an estimate of F
+popt_BMP4, pcov_BMP4 = curve_fit(DLQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0], [ 1]))
+
+# Extract the param of interest
+F = popt_BMP4
+print(f"Fraction of GSC F = {F}")
+print(f"Fitted parameters for CTRL case: alpha = {alpha}, beta = {beta}")
+print(f"alpha/beta = {alpha/beta}")
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model(doses,alpha*gamma,beta*gamma))
+plt.plot(doses,DLQ_model(doses,F))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-DLQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()     
+
+```
+
+
+## QNS315 (Female primary)
+```{python}
+
+cline = "QNS315"
+
+# Fit the model to the data CTRL case
+#popt_ctrl, pcov_ctrl = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+# Fit the model to the data CTRL case with alpha/beta fixed to 10
+popt_ctrl_fixed, pcov_ctrl_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Extract the fitted parameters CTRL case
+#alpha, beta = popt_ctrl
+#alpha = alpha / gamma
+#beta = beta / gamma
+
+alpha = popt_ctrl_fixed
+alpha = alpha / gamma
+beta = alpha / 10
+
+# Function to evaluate DLQ model
+def DLQ_model(dose,F):
+
+    return F*np.exp(gamma*(-alpha * dose - beta * dose**2)) + (1-F)*np.exp(-alpha * dose - beta * dose**2)
+
+
+# Fit the model to the data BMP4 case to get an estimate of F
+popt_BMP4, pcov_BMP4 = curve_fit(DLQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0], [ 1]))
+
+# Extract the param of interest
+F = popt_BMP4
+print(f"Fraction of GSC F = {F}")
+print(f"Fitted parameters for CTRL case: alpha = {alpha}, beta = {beta}")
+print(f"alpha/beta = {alpha/beta}")
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model(doses,alpha*gamma,beta*gamma))
+plt.plot(doses,DLQ_model(doses,F))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-DLQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()     
+
+```
+
+
+## QNS657 (Female primary)
+```{python}
+
+cline = "QNS657"
+
+# Fit the model to the data CTRL case
+#popt_ctrl, pcov_ctrl = curve_fit(LQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0, 0], [np.inf, np.inf]))
+
+# Fit the model to the data CTRL case with alpha/beta fixed to 10
+popt_ctrl_fixed, pcov_ctrl_fixed = curve_fit(LQ_model_fixed_ratio, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"],bounds=([0], [np.inf]))
+
+# Extract the fitted parameters CTRL case
+#alpha, beta = popt_ctrl
+#alpha = alpha / gamma
+#beta = beta / gamma
+
+alpha = popt_ctrl_fixed
+alpha = alpha / gamma
+beta = alpha / 10
+
+# Function to evaluate DLQ model
+def DLQ_model(dose,F):
+
+    return F*np.exp(gamma*(-alpha * dose - beta * dose**2)) + (1-F)*np.exp(-alpha * dose - beta * dose**2)
+
+
+# Fit the model to the data BMP4 case to get an estimate of F
+popt_BMP4, pcov_BMP4 = curve_fit(DLQ_model, rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"], rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"],bounds=([0], [ 1]))
+
+# Extract the param of interest
+F = popt_BMP4
+print(f"Fraction of GSC F = {F}")
+print(f"Fitted parameters for CTRL case: alpha = {alpha}, beta = {beta}")
+print(f"alpha/beta = {alpha/beta}")
+
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+doses= np.linspace(0,6,101)
+plt.plot(doses,LQ_model(doses,alpha*gamma,beta*gamma))
+plt.plot(doses,DLQ_model(doses,F))
+
+plt.legend(["CTRl", "BMP4", "CTRL-LQ", "BMP4-DLQ"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.title(f"{cline}")
+
+plt.show()     
+
+```

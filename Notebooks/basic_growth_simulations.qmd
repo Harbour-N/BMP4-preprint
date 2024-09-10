@@ -1,0 +1,361 @@
+---
+title: "Basic growth simulations"
+discription: "Simulations of basic tumour growth."
+author: 
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+# Simulations of basic tumour growth. 
+
+[Preoperative growth dynamics of untreated glioblastoma: Description of an exponential growth type, correlating factors, and association with postoperative survival](https://doi.org/10.1093/noajnl/vdae053)
+
+"Median tumor volume doubling time (VDT) was 31 days, median specific growth rate (SGR) was 2.2% growth per day." 
+This quote from the paper must use this same relationship: 
+growth rate = $\ln(2)/T2=0.0224/\text{day}==8.16/\text{year}$. 
+
+[Patient-specific parameter estimates of glioblastoma multiforme growth dynamics from a model with explicit birth and death rates](https://doi.org/10.3934%2Fmbe.2019265)
+
+Max proliferation rate of about 0.2/day (this is not volumetric growth rate, but proliferation rate) in a reaction diffusion model. This is equal to 73/year. 
+
+yang2019 has mean around 20/year. 
+
+Key parameters here are going to be: $P_s$, $m_s$, $k$, $\delta_s$, $m_i$ (all the same), $\delta_i$ (the same for $i=1,...,n-1$), $\delta_n$. 
+
+This is six key parameters, assuming $k=1$. 
+
+## Import packages
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+from numba import jit
+```
+
+## import functions
+all functions are in: "notebooks/gsc_model_functions.py"
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+# Calculate Ps_max
+
+Simulate model and calculate the fraction of GSCs to work out reasonable values for Ps.
+
+```{python}
+#| label: fig-simulate-model
+#| fig-cap: caption.
+#| fig-alt: alt text.
+
+
+### import params
+from gsc_model_params import *
+
+### override some parameters ###
+# fixed proliferation rate
+# use the mean of the fitted distribution
+pro_rate = 20 # per year
+
+lam = 0 # max probability rate in detection & death, in this simulation we do want to simulate detection/death so set it to 0
+
+s0 = 0.001 # initial GSCs
+
+u0 = np.zeros((1,n+1))
+u0[0] = s0
+
+dt = 0.1
+rad_on = 0 # no RT
+BMP4_on = 0 # no BMP4
+resect_on = 0   # no resection    
+
+## core parameters
+mv = mv_rho_scale*np.ones(n)*pro_rate
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# calc alpha as proportional to rho
+alpha = gmf.calc_alpha_from_rho(pro_rate)
+beta = gmf.calc_beta(alpha)
+
+Ps_list = np.linspace(0.505,0.9,11) # try a range of Ps_max values
+  
+save_frac_GSC = np.zeros(len(Ps_list)) # store frac of GSCs at steady state for each value of Ps
+save_final_N = np.zeros(len(Ps_list)) # store the total tumour size at the final time to ensure carrying capacity has been reached
+t_final = 20000
+
+random_seed = 1
+
+j = 0
+
+fig, (ax1,ax2) = plt.subplots(2, sharex=True) 
+
+for Ps_max in Ps_list:
+    u,N,VS,t,m,B,detect_size,detect_t,tp1,tp2 = gmf.simulate_model(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,random_seed)
+    # only store steady state if the rate of change is sufficiently small
+    if abs(u[-1,0]/N[-1] - u[-2,0]/N[-2])/dt < 1e-5: 
+      save_frac_GSC[j] = u[-1,0]/N[-1]  
+      save_final_N[j] = N[-1]
+    j = j + 1
+
+    ax1.plot(t,N)
+    ax1.set(ylabel="Tumour cell count / density")
+    fig.suptitle("Simulated evolution of tumour")
+
+    ax2.set(ylabel="Frac of GSCs")
+    ax2.plot(t,u[:,0]/N)
+    ax2.set(xlabel="Time (days)")
+
+```
+
+Plot the results of frac GSCs and total tumour volume together
+```{python}
+#| label: fig-Ps_max_value_and_N
+#| fig-cap: caption.
+#| fig-alt: alt text.
+
+fig, (ax1,ax2) = plt.subplots(2, sharex=True) 
+
+ax1.plot(Ps_list,save_final_N,'x-')
+ax1.set(ylabel="N")
+ax1.legend(['N'])
+
+ax2.plot(Ps_list,save_frac_GSC,'o-')
+ax2.set(xlabel="Ps")
+ax2.set(ylabel="Frac of GSCs")
+ax2.legend(['GSC'])
+
+fig.suptitle("N and fraction of GSCs at steady state")
+plt.show()
+
+```
+
+plot only the frac of GSCs
+
+```{python}
+#| label: fig-Ps_max_value_GSC_frac
+#| fig-cap: As We increase $P_s$ the fraction of GSCs increases.
+#| fig-alt: alt text.
+plt.plot(Ps_list,save_frac_GSC,'o-')
+plt.xlabel("Ps")
+plt.ylabel("Frac of GSCs")
+plt.title("N and fraction of GSCs at steady state")
+plt.show()
+```
+
+
+For our chosen value of Ps_max simulate the model 
+```{python}
+#| label: fig-simulate_model_Ps_max_value
+#| fig-cap: caption
+#| fig-alt: alt text
+
+Ps_max = 0.52
+t_final = 10000
+u,N,VS,t,m,B,detect_size,detect_t,tp1,tp2 = gmf.simulate_model(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,random_seed)
+
+fig, (ax1,ax2) = plt.subplots(2, sharex=True) 
+
+ax1.plot(t,N)
+ax1.plot(t,u[:,])
+ax1.set(ylabel="Tumour cell count / density")
+fig.suptitle("Simulated evolution of tumour")
+
+ax2.set(ylabel="Frac of GSCs")
+ax2.plot(t,u[:,0]/N,label='s')
+for i in range(1,n+1) : 
+    ax2.plot(t,u[:,i]/N,label='v'+str(i))
+ax2.set(xlabel="Time (days)")
+ax2.legend()
+
+```
+
+# Explore link between full and reduced model
+
+Initialise arrays, etc. 
+```{python}
+Ps = Ps_max
+t_final = 20000
+dt = 0.1
+
+t = np.arange(0, t_final+dt, dt)
+nt = len(t)
+
+u = np.zeros((nt,n+1))
+VS = np.zeros(nt)
+N = np.zeros(nt)
+ 
+# define IC
+n0 = 0.001
+s0 = 0.01*n0 # fraction of initial tumour
+v_ratio = 1.95 # ratio between successive compartments
+v0 = ((n0-s0)*(v_ratio-1)/(v_ratio**n-1))*(v_ratio**np.arange(n))
+u0 = np.zeros(n+1)
+u0[0] = s0
+u0[1:] = v0
+
+
+# u[0,0] = s0
+u[0,:] = u0
+VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+N[0] = u[0,0] + VS[0]
+ 
+for i in range(nt-1):
+       
+        u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                
+        VS[i+1] = np.sum(u[i+1,1:n+1])
+        N[i+1] = u[i+1,0] + VS[i+1]
+
+```
+
+Run reduced model. It should have equivalent steady states to the full model. 
+```{python}
+#| label: Run_reduced_model
+#| fig-cap: caption.
+#| fig-alt: alt text.
+
+t_final = 20000
+dt = 0.1
+t_reduced = np.arange(0, t_final+dt, dt)
+nt_reduced = len(t_reduced)
+
+u_reduced = np.zeros((nt_reduced,2))
+VS_reduced = np.zeros(nt_reduced)
+N_reduced = np.zeros(nt_reduced)
+vi_reconstructed = np.zeros((nt_reduced,n))
+
+# define IC
+u_reduced[0,0] = s0
+VS_reduced[0] = u_reduced[0,0] 
+N_reduced[0] = u[0,0] + VS_reduced[0]
+
+for i in range(nt_reduced-1):
+       
+        u_reduced[i+1,:] = u_reduced[i,:] + dt * gmf.gsc_model_reduced_dudt(u_reduced[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                
+        VS_reduced[i+1] = u_reduced[i+1,1]
+        N_reduced[i+1] = u_reduced[i+1,0] + VS_reduced[i+1]
+
+```
+
+Reconstruct full model trajectories as if the reduction were exact (which it should be at steady state). 
+```{python}
+vi_reconstructed[:,0] = gmf.alpha_1(N_reduced,mv,k,delta_v,n)*VS_reduced
+for i in range(1,n):
+  vi_reconstructed[:,i] = gmf.alpha_i(N_reduced,mv,k,delta_v,i)*vi_reconstructed[:,i-1]
+
+```
+
+Plot full model results. 
+```{python}
+plt.figure()
+plt.plot(t,u[:,0],'*')
+plt.plot(t,u[:,1:n+1])
+plt.plot(t,VS,'--')
+plt.plot(t,N)
+plt.plot(t[-1],VS_reduced[-1],'x')
+plt.plot(t[-1]*np.ones(n),np.squeeze(vi_reconstructed[-1:,]),'x')
+plt.xlabel("Time")
+plt.ylabel("Tumour cell count / density")
+plt.title("Example simulation")
+plt.legend(["GSC", "v1", "V2", "v3","v4", "v5", "v6", "v7", "v8", "v9", "v10", "VS", "N", r"$V_{red}$", r"$V_{i,recon}$"])
+plt.show()
+
+
+```
+
+We see that in the case when we have 10 generations the GSCs are kept at much lower numbers as is the case in: https://aacrjournals.org/cancerres/article/73/5/1481/586464/Acute-and-Fractionated-Irradiation-Differentially
+```{python}
+plt.figure()
+plt.plot(t,u[:,0])
+plt.plot(t,VS)
+plt.title("GSCs compared to non-stem cells")
+
+```
+
+
+The final compartment still dominates the intermediate compartments but not as much as previously. Interestingly if you decrease the stem cell death which probably should be done then this is not the case!
+```{python}
+plt.figure()
+plt.plot(t,u[:,1:n])
+plt.plot(t,u[:,n],'--')
+plt.plot(t[-1]*np.ones(n),np.squeeze(vi_reconstructed[-1:,]),'x')
+plt.legend([ "v1", "V2", "v3","v4", "v5", "v6", "v7", "v8", "v9", "v10", r"$V_{i,recon}$"])
+plt.title("All progenitor cells")
+plt.show()
+
+```
+
+Plot reduced model results and comparison with full model. 
+```{python}
+plt.figure()
+plt.plot(t_reduced,u_reduced[:,0],'g')
+plt.plot(t_reduced,VS_reduced,'m')
+plt.plot(t_reduced,N_reduced,'r')
+plt.plot(t_reduced[-1],u[-1,0],'bx')
+plt.plot(t_reduced[-1],VS[-1],'gx')
+plt.plot(t_reduced[-1],N[-1],'rx')
+plt.xlabel("Time")
+plt.ylabel("Tumour cell count / density")
+plt.title("Example simulation - reduced model")
+plt.legend([r"$GSC_{red}$", r"$V_{red}$", r"$N_{red}$", "s(end)", "VS(end)", "N(end)"])
+plt.show()
+```
+
+Plot nullclines for the reduced model. 
+```{python}
+#| label: fig-Plot_nullclines
+#| fig-cap: caption
+#| fig-alt: alt text.
+
+srange = np.linspace(-0.05*k, 1.01*k, 101)
+Vrange = np.linspace(-0.05*k, 1.01*k, 101)
+s, V = np.meshgrid(srange,Vrange)
+
+cntrV = plt.contour(s, V, gmf.gsc_model_reduced_dVdt(s,V,n,Ps,k,ms,mv,delta_s,delta_v), [0], colors = 'b')
+h,_ = cntrV.legend_elements()
+dsdt1 = plt.plot(0*srange,Vrange,'-r')
+dsdt2 = plt.plot(srange,(1-delta_s/((2*Ps-1)*ms))*k-srange,'-r')
+plt.plot(u_reduced[-1,0],VS_reduced[-1],'*k')
+plt.xlabel("s, stem cells")
+plt.ylabel("V, differentiating cells")
+plt.title("Nullclines - reduced model")
+plt.legend([dsdt1[0],h[0]],['ds/dt=0','dV/dt=0'])
+plt.show()
+```
+
+Zoom in nearer the intersection / steady state. 
+```{python}
+srange = np.linspace(-0.001*k, 0.05*k, 101)
+Vrange = np.linspace(-0.05*k, 1.01*k, 101)
+s, V = np.meshgrid(srange,Vrange)
+
+cntrV = plt.contour(s, V, gmf.gsc_model_reduced_dVdt(s,V,n,Ps,k,ms,mv,delta_s,delta_v), [0], colors = 'b')
+h,_ = cntrV.legend_elements()
+dsdt1 = plt.plot(0*srange,Vrange,'-r')
+dsdt2 = plt.plot(srange,(1-delta_s/((2*Ps-1)*ms))*k-srange,'-r')
+plt.plot(u_reduced[-1,0],VS_reduced[-1],'*k')
+plt.xlabel("s, stem cells")
+plt.ylabel("V, differentiating cells")
+plt.title("Nullclines - reduced model")
+plt.legend([dsdt1[0],h[0]],['ds/dt=0','dV/dt=0'])
+plt.show()
+```

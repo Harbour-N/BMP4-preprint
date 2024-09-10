@@ -1,0 +1,505 @@
+---
+title: Phase 2 trial stratified by proliferation rate
+description: Example phase 2 virtual trial for BMP4 + RT
+format:
+    html:
+        code-fold: true
+        toc: true
+        code-tools: true
+        embed-resources: true
+        date-modified: last-modified
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+jupyter: python3
+---
+
+# import packages and define functions
+
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+from numba import jit
+from sksurv.compare import compare_survival
+from sksurv.nonparametric import kaplan_meier_estimator
+```
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+For this we need to load in the patient data and calculate the distribution params
+```{python}
+#| label: Load_the_real_data
+
+# load in the patient survival data
+historic_df = pd.read_csv("Data/Rho_D_data.csv")
+censored_str = "Censorship (1=censored)"
+survival_str = "Overall Survival"
+# only keep patients that weren't censored
+historic_df = historic_df[historic_df[censored_str] == 0]
+# cut off patients that had very high proliferation rate
+historic_df = historic_df[historic_df["PIHNA rho"] < 100 ] 
+historic_df[censored_str] = True
+
+# fit distribution to the data
+dist_name = 'lognorm'  # Replace with the desired distribution name
+dist = getattr(stats, dist_name)
+params = dist.fit(historic_df["PIHNA rho"])
+    
+shape = params[0]
+loc = params[1]
+scale = params[-1]
+```
+
+Define a custom version of this function to make specific figs.
+```{python}
+
+
+def my_phase2_trial_fun(n_trials,n_patients,distinct_arms,rho_case,shape,loc,scale): 
+    # n_trials (int), number of virtual clinical trials to calculate average from.
+    # n_patients (int), number of patients per phase 2 virtual trial
+    # distinct_arms (bool), whether the BMP4 and noBMP4 arms should be distinct sub-populations
+    # rho_case (int), how to select patients from the rho distribution
+
+    from gsc_model_params import mu,eta,n,k,delta_s,delta_v,delta_m,delta_b,u_s,C,lam,Ps_max,Ps_min,psi,mv_rho_scale,ms_mv_scale,mv_rho_scale,ms_mv_scale,detect_threshold,death_threshold,detection_sensitivity,death_sensitivity,alpha_rho_scale,resection_to_RT_delay,t_RT_interval,t_RT_cycle,n_RT_repeat,n_RT_cycles,t_RT_wait,resect_fraction
+    sigma =0.001
+
+    s0 = 0.001 # Initial GSCs
+
+    u0 = np.zeros(n+1)
+    u0[0] = s0
+
+    n0 = 0.001
+    s0 = 0.01*n0 # fraction of initial tumour
+    v_ratio = 1.95 # ratio between successive compartments
+    v0 = ((n0-s0)*(v_ratio-1)/(v_ratio**n-1))*(v_ratio**np.arange(n))
+    u0 = np.zeros(n+1)
+    u0[0] = s0
+    u0[1:] = v0
+
+    psi_mean = 0.0085 # mean psi value to generate samples from turn normal, roughtly based on the fitted values.
+    # try an range of BMP4 concentrations.
+    m_init_values =[0,200,500,1000]
+    average_BMP4 = [0,8,20,40]
+    frac_succ = np.zeros(len(m_init_values)) # save the number of trials that are successful
+
+    # set up time grid
+    t_final = 8000
+    dt = 0.01
+    t = np.arange(0, t_final+dt/2, dt)
+
+    save_data = np.zeros([n_trials*n_patients, 5]) # store all the data we need
+    # for each trial find out p value
+    p_values = np.zeros([len(m_init_values),n_trials])
+    BMP4_mean_survival = np.zeros([len(m_init_values),n_trials])
+    noBMP4_mean_survival = np.zeros([len(m_init_values),n_trials])
+    mean_psi = np.zeros([len(m_init_values),n_trials])
+    mean_rho_BMP4 = np.zeros([len(m_init_values),n_trials])
+    mean_rho_noBMP4 = np.zeros([len(m_init_values),n_trials])
+    all_rhos = np.zeros([len(m_init_values),n_trials*n_patients])
+
+    # we want each patient to have a unique random seed so that across all simulations they get the same series of random numbers
+    random_seeds = np.arange(0,n_patients,1)
+
+    # for each trial use the same population of patietns with same psi values and proliferation rates
+    psi_samples_BMP4 = gmf.trunc_norm(psi_mean,sigma,n_patients)
+    psi_samples_noBMP4 = gmf.trunc_norm(psi_mean,sigma,n_patients)
+    pro_rates_sampled_BMP4 = np.sort(lognorm.rvs(shape, loc, scale=scale, size=n_patients))
+    pro_rates_sampled_noBMP4 = np.sort(lognorm.rvs(shape, loc, scale=scale, size=n_patients))
+
+    w = 0
+    for m_init in m_init_values:
+        BMP4_leg = average_BMP4[w] 
+
+        for trial in range(n_trials):
+            np.random.seed(trial) 
+
+            if rho_case==0 : 
+                ### consider four cases here beyond the base case:
+                ### 0) sample required n_patients
+                pro_rates_sampled_BMP4 = np.sort(lognorm.rvs(shape, loc, scale=scale, size=n_patients))
+                pro_rates_sampled_noBMP4 = np.sort(lognorm.rvs(shape, loc, scale=scale, size=n_patients))
+            elif rho_case==1 :
+                ### 1) sample 5x required, take the top 20% (n_patients)
+                pro_rates_sampled_BMP4 = np.sort(lognorm.rvs(shape, loc, scale=scale, size=5*n_patients))
+                pro_rates_sampled_BMP4 = pro_rates_sampled_BMP4[-n_patients:]
+                pro_rates_sampled_noBMP4 = np.sort(lognorm.rvs(shape, loc, scale=scale, size=5*n_patients))
+                pro_rates_sampled_noBMP4 = pro_rates_sampled_noBMP4[-n_patients:]
+            elif rho_case==2 :
+                ### 2) sample 2x required, take the top 50% (n_patients) (draw from different distributions)
+                pro_rates_sampled_BMP4 = np.sort(lognorm.rvs(shape, loc, scale=scale, size=2*n_patients))
+                pro_rates_sampled_BMP4 = pro_rates_sampled_BMP4[-n_patients:]
+                pro_rates_sampled_noBMP4 = np.sort(lognorm.rvs(shape, loc, scale=scale, size=2*n_patients))
+                pro_rates_sampled_noBMP4 = pro_rates_sampled_noBMP4[-n_patients:]
+            elif rho_case==3 :
+                ### 3) sample a distribution with 2x scale parameter (not enough to get much response)
+                pro_rates_sampled_BMP4 = np.sort(lognorm.rvs(shape, loc, scale=2*scale, size=n_patients))
+                pro_rates_sampled_noBMP4 = np.sort(lognorm.rvs(shape, loc, scale=2*scale, size=n_patients))
+            elif rho_case==4 :
+                ### 4) sample a distribution with 3x scale parameter (this is  enough to get a significant response)
+                pro_rates_sampled_BMP4 = np.sort(lognorm.rvs(shape, loc, scale=3*scale, size=n_patients))
+                pro_rates_sampled_noBMP4 = np.sort(lognorm.rvs(shape, loc, scale=3*scale, size=n_patients))
+            elif rho_case==5 :
+                ### 5) sample 4x required, take the top 50% (2*n_patients) and split in two between BMP4 and noBMP4
+                pro_rates_sampled = np.sort(lognorm.rvs(shape, loc, scale=scale, size=4*n_patients))
+                pro_rates_sampled_BMP4 = pro_rates_sampled[-2*n_patients::2]
+                pro_rates_sampled_noBMP4 = pro_rates_sampled[-(2*n_patients-1)::2]
+            elif rho_case==7:
+               ### 7) sample 4x requiered, take the bottom 50% slowest proliferation rates and split them between BMP4 and noBMP4
+                pro_rates_sampled = np.sort(lognorm.rvs(shape, loc, scale=scale, size=4*n_patients))
+                pro_rates_sampled_BMP4 = pro_rates_sampled[1:2*n_patients:2]
+                pro_rates_sampled_noBMP4 = pro_rates_sampled[0:2*n_patients-1:2]
+            elif rho_case == -100:
+                ### 6) sample 4x required, take the middle 50% (n_patients) and split in two between BMP4 and noBMP4
+                pro_rates_sampled = np.sort(lognorm.rvs(shape, loc, scale=scale, size=4*n_patients))
+                pro_rates_sampled_noBMP4 = pro_rates_sampled[20:20+(2*n_patients):2]
+                pro_rates_sampled_BMP4 = pro_rates_sampled[21: 21+2*(n_patients):2]
+            elif rho_case == 22:
+                pro_rates_sampled = np.sort(lognorm.rvs(shape, loc, scale=scale, size=n_patients))
+                pro_rates_sampled_BMP4 = pro_rates_sampled
+                pro_rates_sampled_noBMP4 = pro_rates_sampled
+
+            if not(distinct_arms) :
+                #pro_rates_sampled_noBMP4 = np.sort(lognorm.rvs(shape, loc, scale=scale, size=2*n_patients))
+                #pro_rates_sampled_noBMP4 = pro_rates_sampled_noBMP4[10:10+n_patients]
+                pro_rates_sampled_BMP4 = pro_rates_sampled_noBMP4
+                psi_samples_noBMP4 = psi_samples_BMP4
+
+            all_rhos[w,trial*n_patients:(trial*n_patients+n_patients)] = pro_rates_sampled_BMP4
+
+            rad_on = 1        
+            BMP4_on = 1
+            resect_on = 1
+
+            q = 0 # loop variable
+
+            BMP4_survival = np.zeros(n_patients)
+            noBMP4_survival = np.zeros(n_patients)
+
+            for psi, pro_r in zip(psi_samples_BMP4,pro_rates_sampled_BMP4):
+                
+                    mv = mv_rho_scale*pro_r*np.ones(n)
+                    ms = ms_mv_scale*mv[0]
+                    mv[n-1] = 0 
+            
+                    # calc alpha as proportional to rho
+                    alpha = gmf.calc_alpha_from_rho(pro_r)
+                    beta = gmf.calc_beta(alpha)
+            
+                    # simulate the model
+                    u,N,VS,t,m,B,detect_size,detect_t,_,_ = gmf.simulate_model(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,random_seeds[q],m_init)
+
+                
+                    # save the survival time of the BMP4 arm
+                    save_data[(trial*n_patients)+q,2] = t[-1]-detect_t
+                    # svae the trial number
+                    save_data[(trial*n_patients)+q,0] = trial
+                    # save the psi value
+                    save_data[(trial*n_patients)+q,1] = psi
+                    BMP4_survival[q] = t[-1]-detect_t
+                    
+                    q = q+1
+
+            # for each of the patients run the same thing again but with no BMP4 to act as a virtual control
+            rad_on = 1
+            BMP4_on = 0
+            resect_on = 1
+
+            q = 0 # loop variable
+
+            for psi, pro_r in zip(psi_samples_noBMP4, pro_rates_sampled_noBMP4):
+                
+                    mv = mv_rho_scale*pro_r*np.ones(n)
+                    ms = ms_mv_scale*mv[0]
+                    mv[n-1] = 0 
+            
+                    # calc alpha as proportional to rho 
+                    alpha = gmf.calc_alpha_from_rho(pro_r)
+                    beta = gmf.calc_beta(alpha)
+
+                    u,N,VS,t,m,B,detect_size,detect_t,_,_ = gmf.simulate_model(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,random_seeds[q],m_init)
+                
+                    # save the survival time of the virtual control arm
+                    save_data[(trial*n_patients)+q,3] = t[-1]-detect_t
+                    # svae the trial number
+                    save_data[(trial*n_patients)+q,0] = trial
+                    noBMP4_survival[q] = t[-1]-detect_t
+                    q = q+1
+            BMP4_mean_survival[w,trial] = np.mean(BMP4_survival)
+            noBMP4_mean_survival[w,trial] = np.mean(noBMP4_survival)
+            mean_psi[w,trial] = np.mean(psi_samples_BMP4)
+            mean_rho_BMP4[w,trial] = np.mean(pro_rates_sampled_BMP4)
+            mean_rho_noBMP4[w,trial] = np.mean(pro_rates_sampled_noBMP4)
+
+
+        survival_BMP4_df = pd.DataFrame(save_data, columns=['trial','psi','Survival_time_BMP4','Virtual_Control', 'Status'])
+
+        # has to be set to boolean not just integer
+        survival_BMP4_df['Status'] = True
+        
+        nrows = int(np.sqrt(n_trials))
+        ncols = int(n_trials/nrows)
+
+        fig = plt.figure(figsize=(15, 15))
+        gs = fig.add_gridspec(nrows, ncols, hspace=0, wspace=0)
+        axs = gs.subplots(sharex=True, sharey=True)
+
+        for i in range(n_trials):
+
+            df = survival_BMP4_df[survival_BMP4_df['trial']==i]
+            # need to create a structed array:
+            dtype = [('event_indicator', bool), ('time', float)]
+            time = np.zeros([n_patients*2])
+            time[0:n_patients,] = np.array(df["Virtual_Control"])
+            time[n_patients:,] = np.array(df["Survival_time_BMP4"])
+            event_indicators = np.ones([n_patients*2])
+            structured_array = np.array( list(zip(event_indicators, time)) , dtype=dtype)
+
+            group = np.zeros(n_patients*2)
+            group[n_patients:] = 1
+            chisq, p_value, stats1, covariance = compare_survival(y = structured_array, group_indicator= group, return_stats=True)
+            p_values[w,i] = p_value
+
+            time, survival_prob, conf_int = kaplan_meier_estimator(df["Status"], df["Virtual_Control"], conf_type="log-log")
+            fig.axes[i].step(time, survival_prob, where="post")
+            fig.axes[i].fill_between(time, conf_int[0], conf_int[1], alpha=0.25, step="post",  label="_nolegend_")
+            time, survival_prob, conf_int = kaplan_meier_estimator(df["Status"], df["Survival_time_BMP4"], conf_type="log-log")
+            fig.axes[i].step(time, survival_prob, where="post")
+            fig.axes[i].fill_between(time, conf_int[0], conf_int[1], alpha=0.25, step="post",  label="_nolegend_")
+            # fig.axes[i].ylim(0, 1)
+            fig.axes[i].text(.9,.8,'p=' + str('%.*g' % (2, p_value)),horizontalalignment='right',transform=fig.axes[i].transAxes, fontsize = 20)
+            if p_value < 0.05 :
+                fig.axes[i].set_facecolor('0.9')
+            
+            # Increase the font size of the x and y ticks
+            fig.axes[i].tick_params(axis='both', which='major', labelsize=20)
+
+        fig.supylabel("Survival", fontsize=25)
+        fig.supxlabel("Time (day)", fontsize=25)
+        #fig.suptitle(r"Simulated survival BMP4 + RT, " + str(n_trials) + " trials", fontsize=20)
+        # fig.subplots_adjust(bottom=0.2) 
+        # Place the legend at the center above the plots
+        fig.legend(["Virtual Control", f"Average BMP4 concentration = {BMP4_leg}ng/ml"],loc='lower center', bbox_to_anchor=(0.5, 0.99), ncol=2, fontsize=20)
+        # Adjust the layout to make room for the legend
+        fig.tight_layout(rect=[0, 0, 1, 0.999])
+        plt.savefig(f'png/virtual_trial_BMP4_{m_init}_rho_case_{rho_case}.png',bbox_inches='tight')
+        plt.savefig(f'../Manuscript/images/png/virtual_trial_BMP4_{m_init}_rho_case_{rho_case}.png',bbox_inches='tight')
+
+
+        # fraction of successful trials
+        frac_succ[w] = np.sum(p_values[w,:] < 0.05)/n_trials
+        w = w+1
+
+    return m_init_values,frac_succ,BMP4_mean_survival,noBMP4_mean_survival,mean_rho_BMP4,mean_rho_noBMP4,p_values
+
+
+```
+
+
+We will consider that we have a distriubtion of responsive patients to BMP4 with mean psi around 0.1 (this would be highly responsive). Then we will see what concetration of BMP4 is required in order to observe a significant number of successful trials. 
+
+# Single delivery
+
+## Distinct arms
+
+In distinct arms we sample a number more than the required (in this case twice as many) number of samples and then take a certain section (eg: fasters / slowest proliferating)
+
+take top fast proliferating rates
+```{python}
+n_trials=20
+n_patients=20
+
+m_init_values,frac_succ,BMP4_mean_survival,noBMP4_mean_survival,mean_rho_BMP4,mean_rho_noBMP4,p_values = my_phase2_trial_fun(n_trials,n_patients, distinct_arms=True, rho_case=5, shape=shape, loc=loc, scale=scale)
+
+frac_succ_upper_d = frac_succ
+BM4_mean_survival_dist = BMP4_mean_survival
+p_values_dist = p_values
+noBMP4_mean_survival_dist = noBMP4_mean_survival
+
+```
+
+plot results for top fast proliferating rates, for 3 different populations sensitivities to BMP4
+```{python}
+
+BMP4_concetration = np.array([0,80,200,400]) / 100
+plt.figure()
+plt.plot(BMP4_concetration,frac_succ, 'o-') 
+plt.xlabel("Total BMP4 concentration", fontsize=14)
+plt.ylabel("Fraction of successful trials", fontsize=14)
+plt.ylim(-0.1,1.1)
+plt.title('Top 50% proliferation rate, ' + str(n_patients) + ' patients', fontsize=14)
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12)
+plt.tight_layout()
+plt.show()
+
+
+fig, (ax1,ax2) = plt.subplots(2, sharex=True) 
+
+ax1.plot(mean_rho_BMP4.T,BMP4_mean_survival.T,'*')
+ax1.set_ylabel('Mean survival', fontsize=14)
+
+ax2.plot(mean_rho_BMP4.T,p_values.T,'*')
+ax2.set_xlabel(r'Mean $\rho$', fontsize=14)
+ax2.set_ylabel('p-value', fontsize=14)
+ax2.legend([r'$\psi$=0',r'$\psi$=0.5',r'$\psi$=5',r'$\psi$=50','no BMP4'], fontsize=12)
+ax2.axhspan(0, 0.05, facecolor ='r', alpha = 0.4)
+plt.tight_layout()
+plt.show()
+
+
+```
+
+
+Slow proliferation rate stratified
+
+```{python}
+
+
+n_trials=20
+n_patients=20
+
+m_init_values,frac_succ,BMP4_mean_survival,noBMP4_mean_survival,mean_rho_BMP4,mean_rho_noBMP4,p_values = my_phase2_trial_fun(n_trials,n_patients, distinct_arms=True, rho_case=7, shape=shape, loc=loc, scale=scale)
+
+frac_suc_lower_d = frac_succ
+BM4_mean_survival_lower = BMP4_mean_survival
+p_values_lower = p_values
+noBMP4_mean_survival_lower = noBMP4_mean_survival
+
+```
+
+
+Plot slow proliferation rate stratified
+
+```{python}
+
+
+plt.figure()
+plt.plot(BMP4_concetration,frac_succ, 'o-') 
+plt.xlabel("Total BMP4 concentration", fontsize=14)
+plt.ylabel("Fraction of successful trials", fontsize=14)
+plt.ylim(-0.1,1.1)
+plt.title('Slowest 50% proliferation, ' + str(n_patients) + ' patients', fontsize=14)
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12)
+plt.tight_layout()
+plt.show()
+
+fig, (ax1,ax2) = plt.subplots(2, sharex=True) 
+
+ax1.plot(mean_rho_BMP4.T,BMP4_mean_survival.T,'*')
+ax1.set_ylabel('Mean survival', fontsize=14)
+
+ax2.plot(mean_rho_BMP4.T,p_values.T,'*')
+ax2.set_xlabel(r'Mean $\rho$', fontsize=14)
+ax2.set_ylabel('p-value', fontsize=14)
+ax2.legend([r'$\psi$=0',r'$\psi$=0.5',r'$\psi$=5',r'$\psi$=50','no BMP4'], fontsize=12)
+ax2.axhspan(0, 0.05, facecolor ='r', alpha = 0.4)
+plt.tight_layout()
+plt.show()
+
+
+```
+
+middle 50% proliferation rate stratified with identical proliferations rates for no-BMP4 ans BMP4 arms
+
+```{python}
+
+
+n_trials=20
+n_patients=20
+
+# important thing here is that distinct_arms is set to False
+m_init_values,frac_succ,BMP4_mean_survival,noBMP4_mean_survival,mean_rho_BMP4,mean_rho_noBMP4,p_values = my_phase2_trial_fun(n_trials,n_patients, distinct_arms=True, rho_case=-100, shape=shape, loc=loc, scale=scale)
+
+frac_suc_mid_d = frac_succ
+BM4_mean_survival_rand = BMP4_mean_survival
+p_values_rand = p_values
+noBMP4_mean_survival_rand = noBMP4_mean_survival
+
+```
+
+
+```{python}
+
+plt.figure()
+plt.plot(BMP4_concetration,frac_succ, 'o-') 
+plt.xlabel("Total BMP4 concentration", fontsize=14)
+plt.ylabel("Fraction of successful trials", fontsize=14)
+plt.ylim(-0.1,1.1)
+plt.title('Middle 50% pro-rate, ' + str(n_patients) + ' patients', fontsize=14)
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12)
+plt.tight_layout()
+plt.show()
+
+
+fig, (ax1,ax2) = plt.subplots(2, sharex=True) 
+
+ax1.plot(mean_rho_BMP4.T,BMP4_mean_survival.T,'*')
+ax1.set_ylabel('Mean survival', fontsize=14)
+
+ax2.plot(mean_rho_BMP4.T,p_values.T,'*')
+ax2.set_xlabel(r'Mean $\rho$', fontsize=14)
+ax2.set_ylabel('p-value', fontsize=14)
+ax2.legend([r'$\psi$=0',r'$\psi$=0.5',r'$\psi$=5',r'$\psi$=50','no BMP4'], fontsize=12)
+ax2.axhspan(0, 0.05, facecolor ='r', alpha = 0.4)
+plt.tight_layout()
+plt.show()
+
+
+```
+
+### SUmmary of distinct arms
+
+```{python}
+
+BMP4_concetration = np.array([0,8,20,40])
+plt.figure(figsize=(15, 15))
+plt.plot(BMP4_concetration,frac_suc_lower_d, 'o-', linewidth=5, markersize=20) 
+plt.plot(BMP4_concetration,frac_succ_upper_d, 'o-',linewidth=5,markersize=20)
+plt.plot(BMP4_concetration,frac_suc_mid_d, 'o-', linewidth=5,markersize=20) 
+plt.xlabel("Average BMP4 concentration", fontsize=25)
+plt.ylabel("Fraction of successful trials", fontsize=25)
+plt.ylim(-0.1,1.1)
+#plt.title('probablity of successful trial depends on patient statification, ' + str(n_patients) + ' patients', fontsize=14)
+plt.xticks(fontsize=20)
+plt.yticks(fontsize=20)
+plt.legend(['Slow proliferation','Fast proliferation', "Medium proliferation"], fontsize = 25)
+plt.tight_layout()
+plt.savefig('png/prob_succ_strat.png')
+plt.savefig('../Manuscript/images/png/prob_succ_strat.png')
+plt.show()
+
+'''
+total_AMSCs = m_init_values
+
+plt.figure(figsize=(15, 15))
+plt.plot(total_AMSCs,frac_suc_lower_d, 'o-', linewidth=5) 
+plt.plot(total_AMSCs,frac_succ_upper_d, 'o-',linewidth=5)
+plt.plot(total_AMSCs,frac_suc_mid_d, 'o-', linewidth=5) 
+plt.xlabel("BMP4 concentration", fontsize=25)
+plt.ylabel("Fraction of successful trials", fontsize=25)
+plt.ylim(-0.1,1.1)
+#plt.title('probablity of successful trial depends on patient statification, ' + str(n_patients) + ' patients', fontsize=14)
+plt.xticks(fontsize=20)
+plt.yticks(fontsize=20)
+plt.legend(['Slow proliferation','Fast proliferation', "Medium proliferation"], fontsize = 25)
+plt.tight_layout()
+#plt.savefig('png/prob_succ_strat.png')
+#plt.savefig('../Manuscript/images/png/prob_succ_strat.png')
+plt.show()
+'''
+
+```
+
+
+

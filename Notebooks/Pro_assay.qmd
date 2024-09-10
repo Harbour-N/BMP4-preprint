@@ -1,0 +1,251 @@
+---
+title: Proliferation assay
+description: Simulate the proliferation assay of Q's group with our model
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+# import packages and define functions
+
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+from numba import jit
+import matplotlib.colors as mcolors
+import seaborn as sns
+```
+
+all functions are in: "notebooks/gsc_model_functions.py"
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+For this we need to load in the patient data and calculate the distribution params
+```{python}
+#| label: Load_the_real_data
+
+# load in the patient survival data
+historic_df = pd.read_csv("Data/Rho_D_data.csv")
+censored_str = "Censorship (1=censored)"
+survival_str = "Overall Survival"
+# only keep patients that weren't censored
+historic_df = historic_df[historic_df[censored_str] == 0]
+# cut off patients that had very high proliferation rate
+historic_df = historic_df[historic_df["PIHNA rho"] < 100 ] 
+historic_df[censored_str] = True
+
+# fit distribution to the data
+dist_name = 'lognorm'  # Replace with the desired distribution name
+dist = getattr(stats, dist_name)
+params = dist.fit(historic_df["PIHNA rho"])
+    
+shape = params[0]
+loc = params[1]
+scale = params[-1]
+```
+
+The experimental protocol: after cell seeding, cells were treated for a brief period for 7 days with BMP4. At day 7, the plate was centrifuged, and the media was removed, and the cell pellet was collected and frozen. The following day, the pellet was resuspended with the lysis buffer (kit method, [cyquant assay](https://www.thermofisher.com/order/catalog/product/C7026)) and the plate was read at 528nm.
+
+Fluorescence at DO528nm is due to the presence of fluorescent dye SYBR green. Query this as I'd expect it to be due to CyQuant GR. 
+
+This assay determines the number of cells. Original reference is [Sensitive determination of cell number using the CyQUANT cell proliferation assay, Jones et al, 2001](https://doi.org/10.1016/s0022-1759(01)00404-5)
+
+# Load proliferation data
+
+```{python}
+#| label: load_cell_line_prolif_data
+
+prolif_df1 = pd.read_csv("Data/BMP4 and Proliferation data-1.csv")
+prolif_df2 = pd.read_csv("Data/BMP4 and Proliferation data-2.csv")
+prolif_df3 = pd.read_csv("Data/BMP4 and Proliferation data-3.csv")
+
+```
+
+## remove data with exclude=yes
+```{python}
+prolif_df2 = prolif_df2[prolif_df2.exclude!="yes"]
+```
+
+# Exploratory plots
+
+## Boxplot the raw data for each cell line
+
+```{python}
+plt.figure()
+plt.xticks(rotation='vertical')
+sns.boxplot(data=prolif_df2, x='cline', y='DO528nm', hue='group', showfliers=False, boxprops={'alpha': 0.4})
+sns.stripplot(data=prolif_df2, x='cline', y='DO528nm', hue='group', dodge=True, alpha=0.6)
+
+```
+
+## Plot the cell proliferation data for GBM1a only
+
+```{python}
+plt.figure()
+plt.xticks(rotation='vertical')
+sns.boxplot(data=prolif_df2[prolif_df2.cline=="GBM1a"], x='cline', y='DO528nm', hue='group', showfliers=False, boxprops={'alpha': 0.4})
+sns.stripplot(data=prolif_df2[prolif_df2.cline=="GBM1a"], x='cline', y='DO528nm', hue='group', dodge=True)
+
+```
+
+```{python}
+plt.figure()
+plt.xticks(rotation='vertical')
+sns.boxplot(data=prolif_df2[(prolif_df2.cline=="GBM1a") & (prolif_df2.exclude!="yes")], x='cline', y='DO528nm', hue='group', boxprops={'alpha': 0.4})
+sns.stripplot(data=prolif_df2[(prolif_df2.cline=="GBM1a") & (prolif_df2.exclude!="yes")], x='cline', y='DO528nm', hue='group', dodge=True)
+
+```
+
+```{python}
+from matplotlib.legend_handler import HandlerTuple
+
+plt.figure()
+plt.xticks(rotation='vertical')
+ax = sns.boxplot(data=prolif_df2[(prolif_df2.group=="CTRL") & (prolif_df2.exclude!="yes")], x='cline', y='DO528nm', hue='group', boxprops={'alpha': 0.4})
+sns.stripplot(data=prolif_df2[(prolif_df2.group=="CTRL") & (prolif_df2.exclude!="yes")], x='cline', y='DO528nm', hue='group', dodge=True, ax=ax)
+handles, labels = ax.get_legend_handles_labels()
+ax.legend(handles=[(handles[0], handles[1])],
+          labels=['CTRL'],
+          loc='upper center', handlelength=2,
+          handler_map={tuple: HandlerTuple(ndivide=None)})
+ax.set_title("Glioma stem cell lines: proliferation assay")
+```
+
+```{python}
+#| label: Simulate_pro_assay
+
+### import params
+from gsc_model_params import n,delta_s,delta_v,k,psi,Ps_max,Ps_min,mv_rho_scale,ms_mv_scale
+
+### override some parameters ###
+
+# constants
+s0 = 0.1 # IC of GSCs
+
+# range of BMP4 doses
+BMP4_doses = [0,1,10,100]
+
+# set up time grid
+dt = 0.01
+t_final = 7
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+# use the mean of the fitted distribution to give proliferation rate
+pro_rate = loc+scale*np.exp(shape**2/2)
+mv = mv_rho_scale*pro_rate*np.ones(n)
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# calc alpha as proportional to rho
+alpha = gmf.calc_alpha_from_rho(mv[0])
+beta = gmf.calc_beta(alpha)
+
+N_save = np.zeros((len(BMP4_doses),len(t)))
+
+for j in range(len(BMP4_doses)):
+    
+
+    Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi*BMP4_doses[j]))
+
+    u = np.zeros((nt,n+1))
+    VS = np.zeros(nt)
+    N = np.zeros(nt)
+
+    # define IC
+    u[0,0] = s0
+    VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+    N[0] = u[0,0] + VS[0]
+    N_save[j,0] = N[0]
+
+    i = 0
+    while t[i] < t_final:
+            u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                
+            VS[i+1] = np.sum(u[i+1,1:n+1])
+            N[i+1] = u[i+1,0] + VS[i+1]
+                        
+            i = i +1
+        
+        
+
+    N_save[j,:] = N # for each BMP4 dose save the time course of total population       
+
+```
+
+Plot total tumour size over the course of proliferation assay
+
+```{python}
+#| label: fig-pro_assay_growth
+#| fig-cap: caption
+#| fig-alt: alt text
+
+colors = list(mcolors.TABLEAU_COLORS)
+for j in range(len(BMP4_doses)):
+    plt.plot(t,N_save[j,:],c = colors[j],label = BMP4_doses[j])
+    plt.plot(t[-1],N_save[j,-1],'b*')
+
+plt.xlabel("Time (days)")
+plt.ylabel("Tumour cell count / density")
+plt.legend()
+plt.title("Simulated tumour cell growth with BMP4")
+
+plt.show()
+```
+
+
+Plot the final result of the assay (tumour cell population after 7 days for different BMP4 doses)
+```{python}
+#| label: fig-pro_assay_effect
+#| fig-cap: Caption for the figure
+#| fig-alt: alt text
+
+plt.plot(BMP4_doses,N_save[:,-1]/N_save[0,-1],'b-*')
+plt.xlabel("BMP4 dose (?)")
+plt.ylabel("Tumour cell population at 7 days")
+plt.title("Simulated BMP4 dose-response")
+plt.show()
+
+```
+
+
+This data gives some idea of relative proliferaion rates.
+We have the known doubling time of GBM1a and QNS120. 54.71329 and 43.5243 hrs respectively.
+
+
+```{python}
+
+
+GBM1a_pro_df = prolif_df2[prolif_df2["cline"] == "GBM1a"]
+QNS120_pro_df = prolif_df2[prolif_df2["cline"] == "QNS120"]
+
+
+plt.figure()
+plt.xticks(rotation='vertical')
+sns.boxplot(data=prolif_df2[(prolif_df2.cline=="GBM1a") & (prolif_df2.exclude!="yes")], x='cline', y='DO528nm', hue='group', boxprops={'alpha': 0.4})
+sns.stripplot(data=prolif_df2[(prolif_df2.cline=="GBM1a") & (prolif_df2.exclude!="yes")], x='cline', y='DO528nm', hue='group', dodge=True)
+
+sns.boxplot(data=prolif_df2[(prolif_df2.cline=="QNS120") & (prolif_df2.exclude!="yes")], x='cline', y='DO528nm', hue='group', boxprops={'alpha': 0.4})
+sns.stripplot(data=prolif_df2[(prolif_df2.cline=="QNS120") & (prolif_df2.exclude!="yes")], x='cline', y='DO528nm', hue='group', dodge=True)
+
+```

@@ -1,0 +1,224 @@
+---
+title: Check RT data
+description: Check differences between the 2 sets of RT data provided
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    code-tools: true
+    highlight-style: atom-one
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+
+
+# Import packages
+
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+import matplotlib.colors as mcolors
+```
+
+Import functions
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+# Load in the data
+
+```{python}
+#| label: Load in the data
+
+rt_df = pd.read_csv("Data/RAW DATA- RT.csv")
+rt_df.head()
+
+```
+
+This is the raw data and does not have plating effecinecy (pe) which is given by ncolonies/ncells, so lets add this column
+
+```{python}
+#| label: Add pe to df
+
+rt_df["pe"] =rt_df["ncolonies"]/ rt_df["ncells"] 
+rt_df.head()
+
+```
+
+
+identify the cell lines we have 
+```{python}
+#| label: Identify cell lines
+
+clines = rt_df["cline"].unique()
+print("Cell lines")
+print(clines)
+
+```
+
+# Normalise the data
+
+We normalise the data:
+- Only inclide up to dose 6 Gy
+- Only include replicates that have measurement at 0,2,4,6 Gy
+- Normalise by rep, group (by survival at dose 0).
+
+```{python}
+#| label: Normalise the data
+
+# filter out doses above 6Gy
+rt_df = rt_df[rt_df["dose"] <= 6]
+
+# initialisea column with all 0s
+rt_df["norm_pe"] = 0 
+
+
+for cline in clines:
+
+    # get a specific cell line
+    #test = rt_df[rt_df["cline"] == cline]
+
+    # keep only replicates that have measurements at 0,2,4,6 Gy
+    keep_reps = []
+    for rep in rt_df[rt_df["cline"] == cline]["rep"].unique():
+        if len(rt_df[(rt_df["cline"] == cline) & (rt_df["rep"] == rep) ]["dose"].unique()) == 4:
+            keep_reps.append(rep)
+
+
+    rt_df[(rt_df["cline"] == cline)] = rt_df[(rt_df["cline"] == cline) & (rt_df['rep'].isin(keep_reps))]
+
+
+    # extract unique groups for each cline
+    groups = rt_df[rt_df["cline"] == cline]["group"].unique()
+
+    for rep in keep_reps:
+        for group in groups:
+            # Filter the DataFrame for the current replicate and group
+            temp = rt_df[(rt_df["cline"] == cline) & (rt_df["rep"] == rep) & (rt_df["group"] == group)]
+        
+            # Calculate the mean of 'pe' at dose 0 for normalization
+            mean_pe_dose_0 = temp[temp["dose"] == 0]["pe"].mean()
+        
+            # Normalize 'pe' and update 'norm_pe' in the original DataFrame
+            rt_df.loc[(rt_df["rep"] == rep) & (rt_df["group"] == group) & (rt_df["cline"] == cline) , "norm_pe"] = temp["pe"] / mean_pe_dose_0
+
+
+print(rt_df)
+
+```
+
+
+# plot survival
+
+## GBM1a (Male Primary)
+
+```{python}
+
+cline = "GBM1a"
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.show()
+```
+
+
+Check what is going on
+
+```{python}
+
+rt_data = pd.read_csv("Data/CFA_data-BMP4-RT Human GSCs.csv")
+
+# filter out doses above 6Gy
+rt_data = rt_data[rt_data["dose"] <= 6]
+
+# get GBM1a
+GBM1a_rt_data = rt_data[rt_data["cline"] == "GBM1a"]
+
+# keep only replicates that have measurements at 0,2,4,6 Gy
+keep_reps = []
+for rep in GBM1a_rt_data["rep"].unique():
+    test = GBM1a_rt_data[GBM1a_rt_data["rep"] == rep]
+    if len(test["dose"].unique()) == 4:
+        keep_reps.append(rep)
+    print(keep_reps)
+
+GBM1a_rt_data = GBM1a_rt_data[GBM1a_rt_data['rep'].isin(keep_reps)]
+
+# Normalise the data by treatment group and dose and replicate
+GBM1a_rt_data["norm_pe"] = 0 # initialisea column with all 0s
+
+groups = GBM1a_rt_data["group"].unique()
+
+for rep in keep_reps:
+    for group in groups:
+        # Filter the DataFrame for the current replicate and group
+        test = GBM1a_rt_data[(GBM1a_rt_data["rep"] == rep) & (GBM1a_rt_data["group"] == group)]
+        
+        # Calculate the mean of 'pe' at dose 0 for normalization
+        mean_pe_dose_0 = test[test["dose"] == 0]["pe"].mean()
+        
+        # Normalize 'pe' and update 'norm_pe' in the original DataFrame
+        GBM1a_rt_data.loc[(GBM1a_rt_data["rep"] == rep) & (GBM1a_rt_data["group"] == group), "norm_pe"] = test["pe"] / mean_pe_dose_0
+
+
+# plot the data
+plt.figure()
+plt.plot(GBM1a_rt_data[GBM1a_rt_data["group"] == "CTRL"]["dose"],GBM1a_rt_data[GBM1a_rt_data["group"] == "CTRL"]["norm_pe"],'o', alpha = 0.2)
+plt.plot(GBM1a_rt_data[GBM1a_rt_data["group"] == "B100"]["dose"],GBM1a_rt_data[GBM1a_rt_data["group"] == "B100"]["norm_pe"],'o',alpha = 0.2)
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.show()
+```
+
+Compare if the 2 data frames are the same
+```{python}
+
+print(rt_df[(rt_df["cline"] == "GBM1a") & (rt_df["group"] == "BMP4")])
+print(GBM1a_rt_data[GBM1a_rt_data["group"]=="B100"])
+
+print(len(rt_df[(rt_df["cline"] == "GBM1a") & (rt_df["group"] == "BMP4")]))
+print(len(GBM1a_rt_data[GBM1a_rt_data["group"]=="B100"]))
+
+print("They have the same relicates")
+print(rt_df[(rt_df["cline"] == "GBM1a") & (rt_df["group"] == "BMP4")]["rep"].unique())
+print(GBM1a_rt_data[GBM1a_rt_data["group"]=="B100"]["rep"].unique())
+
+print("Each replicate individually")
+print(rt_df[(rt_df["cline"] == "GBM1a") & (rt_df["group"] == "BMP4") & (rt_df["rep"]==1.0)])
+
+print(GBM1a_rt_data[(GBM1a_rt_data["group"]=="B100") & (GBM1a_rt_data["rep"]=="r01") ])
+
+
+print(len(rt_df[rt_df["cline"]=="GBM1a"]))
+print(len(GBM1a_rt_data))
+
+```

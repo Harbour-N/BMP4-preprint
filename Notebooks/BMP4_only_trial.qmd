@@ -1,0 +1,282 @@
+---
+title: Simulated BMP4 only virtual trial
+description: Simulate the model with parameter values drawn from real patient data with BMP4 only trial arm
+author: 
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+# import packages and define functions
+
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+from numba import jit
+from sksurv.compare import compare_survival
+from sksurv.nonparametric import kaplan_meier_estimator
+```
+
+all functions are in: "notebooks/gsc_model_functions.py"
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+For this we need to load in the patient data and calculate the distribution params
+```{python}
+#| label: Load_the_real_data
+
+# load in the patient survival data
+historic_df = pd.read_csv("Rho_D_data.csv")
+censored_str = "Censorship (1=censored)"
+survival_str = "Overall Survival"
+# only keep patients that weren't censored
+historic_df = historic_df[historic_df[censored_str] == 0]
+# cut off patients that had very high proliferation rate
+historic_df = historic_df[historic_df["PIHNA rho"] < 100 ] 
+historic_df[censored_str] = True
+
+# fit distribution to the data
+dist_name = 'lognorm'  # Replace with the desired distribution name
+dist = getattr(stats, dist_name)
+params = dist.fit(historic_df["PIHNA rho"])
+    
+shape = params[0]
+loc = params[1]
+scale = params[-1]
+```
+
+# Virtual clinical trial: resection + BMP4
+
+Simulate the model for a cohort of virtual patients who undergo our novel proposed treatment of BMP4 following resection.
+```{python}
+#| label: all_model_sims
+
+### import params
+from gsc_model_params import *
+
+### override some parameters ###
+Ps_min = 0.0 # Min probability of self renewal
+
+# initial conditions
+s0 = 0.001 # Initial GSCs
+u0 = np.zeros(n+1)
+u0[0] = s0
+
+# or initial conditions
+n0 = 0.001
+s0 = 0.01*n0 # fraction of initial tumour
+v_ratio = 1.95 # ratio between successive compartments
+v0 = ((n0-s0)*(v_ratio-1)/(v_ratio**n-1))*(v_ratio**np.arange(n))
+u0 = np.zeros(n+1)
+u0[0] = s0
+u0[1:] = v0
+
+# simulate for a range of psi values
+psi_values = [0,2,5,50,100]
+
+n_patients = 200 # set the number of patients to simulate
+n_patients = len(historic_df) # set the number of patients to simulate
+surv_final = np.zeros([n_patients,len(psi_values)+1]) # store the final survival time for each patient and for each psi value
+
+# set up time grid
+t_final = 8000
+dt = 0.01
+t = np.arange(0, t_final+dt/2, dt)
+
+# generate rhos as sample from lognormal distiution
+np.random.seed(1)
+pro_rates_sampled = np.sort(lognorm.rvs(shape, loc , scale=scale, size=n_patients))
+
+rad_on = 0 # RT off
+BMP4_on = 1 # BMP4 on
+resect_on = 1 # resection on
+
+alphas = np.zeros(n_patients) # to store the set of alphas used
+
+N_save_set = []
+u_save_set = []
+t_save_set = []
+s_save_set = []
+
+# we want each patient to have a unique random seed so that across all simulations they get the same series of random numbers
+random_seeds = np.arange(0,n_patients,1)
+
+q = 0 # loop variable
+
+for psi in psi_values:
+    N_save = [] # save the total tumor size for each virtual patient 
+    u_save = [] # save the total tumor size for each virtual patient 
+    t_save = [] # save the time for each virtual patient
+    s_save = [] # save stem cell variable
+    save_detect_size = [] # save the size of the tumor at detection
+    save_detect_t = [] # save the time of detection
+
+
+    for j in range(n_patients):
+    
+        np.random.seed(random_seeds[j]) # patient specific random seed
+        mv = mv_rho_scale*pro_rates_sampled[j]*np.ones(n) 
+        ms = ms_mv_scale*mv[0]
+        mv[n-1] = 0 
+    
+        # calc alpha as proportional to rho
+        alpha = gmf.calc_alpha_from_rho(pro_rates_sampled[j])
+        beta = gmf.calc_beta(alpha)
+        alphas[j] = alpha
+     
+        u,N,VS,t,m,B,detect_size,detect_t,_,_ = gmf.simulate_model(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,random_seeds[j])
+    
+        surv_final[j,q+1] =  t[-1]-detect_t
+        N_save.append(N)
+        u_save.append(u)
+        t_save.append(t)
+        s_save.append(u[:,0])
+        save_detect_size.append(detect_size)
+        save_detect_t.append(detect_t)
+
+    N_save_set.append(N_save)
+    u_save_set.append(u_save)
+    t_save_set.append(t_save)
+    s_save_set.append(s_save)
+    q = q + 1
+```
+
+## Example tumour trajectories: Resection + RT vs Resection + BMP4
+
+Plot representative model outputs for a cohort of virtual patients who undergo resection alone (entry 0 in saved data); and for Resection + BMP4 for a fixed psi value of 100 (entry 4 in saved data). 
+
+```{python}
+#| label: fig-BMP4-only-model-sims
+#| fig-cap: Five example simulations showing tumour growth, detection, resection and the effect of resection alone (solid curves) and resection + BMP4 (dashed curves). BMP4 delivered via mesenchymal stem cells at the time of resection increases the rate of differentiation of stem cells (GSCs) to TCs, so the stem cell fraction drops making residual tumour more susceptible to radiotherapy, prolonging survival. 
+#| fig-alt: Five example simulations showing tumour growth
+
+n_patients_to_plot = 5
+
+colours = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:brown", "tab:pink", "tab:gray", "tab:olive", "tab:cyan"]
+
+fig, (ax1,ax2,ax3) = plt.subplots(3, sharex=True) 
+q = 0 # loop through colors
+
+index_to_plot = [30, 50, 90, 130, 190]
+
+for i in index_to_plot:
+    ax1.plot(t_save_set[0][i],N_save_set[0][i],color=colours[q],alpha=0.5)
+    ax1.plot(t_save_set[4][i],N_save_set[4][i],'--',color=colours[q],alpha=0.5)
+
+    ax2.plot(t_save_set[0][i],s_save_set[0][i],color=colours[q],alpha=0.5)
+    ax2.plot(t_save_set[4][i],s_save_set[4][i],'--',color=colours[q],alpha=0.5)
+
+    ax3.plot(t_save_set[0][i],s_save_set[0][i]/N_save_set[0][i],color=colours[q],alpha=0.5)
+    ax3.plot(t_save_set[4][i],s_save_set[4][i]/N_save_set[4][i],'--',color=colours[q],alpha=0.5)
+
+    q = q+1
+
+    if save_detect_t[i] > 0:
+        ax1.plot(save_detect_t[i],save_detect_size[i],'r*')
+        ax2.plot(save_detect_t[i],s_save[i][t_save[i]==save_detect_t[i]],'r*')
+        ax3.plot(save_detect_t[i],s_save[i][t_save[i]==save_detect_t[i]]/save_detect_size[i],'r*')
+
+ax1.set_xlim([0, 2000])
+#ax1.set_ylim([0, 0.55])
+ax1.set(ylabel='Tumor size')
+
+ax2.set_yscale('log')
+#ax2.set_ylim([0, 0.0012])
+ax2.set(ylabel='Stem cells')
+
+# ax3.set_ylim([0, 0.06])
+ax3.set(xlabel='Time (days)')
+ax3.set(ylabel='Stem cell fraction')
+
+fig.suptitle("N, s and fraction of GSCs")
+plt.show()
+```
+
+# Example tumour trajectories
+
+Plot represenative examples of tumour growth
+
+```{python}
+#| label: fig-BMP4-only-model-sims2
+#| fig-cap: Caption
+#| fig-alt: Alternative text
+
+n_patients_to_plot = 5
+
+plt.figure()
+
+for i in range(0,n_patients,int(np.floor(n_patients/(n_patients_to_plot-1)))):
+    print(i)
+    plt.plot(t_save[i],N_save[i],color='grey',alpha=0.5)
+    plt.plot(save_detect_t[i],save_detect_size[i],'r*')
+
+plt.xlim(0,2000)
+plt.xlabel('Time (days)')
+plt.ylabel('Tumor size')
+plt.show()
+```
+
+
+Calculate statistical difference between survival between all the psi value groups.
+
+```{python}
+
+```
+
+plot the KM survival curves
+
+```{python}
+#| label: fig-BMP4_only_KM
+#|fig-cap: Simulated survival curves for BMP4 only
+#| fig-alt: Alternate text
+
+
+survival_BMP4_df = pd.DataFrame(surv_final, columns=['Status','Survival_time_sim', 'Survival_time_psi_2', 'Survival_time_psi_5', 'Survival_time_psi_50', 'Survival_time_psi_100'])
+
+# has to be set to boolean not just integer
+survival_BMP4_df['Status'] = True
+
+
+time, survival_prob, conf_int = kaplan_meier_estimator(survival_BMP4_df["Status"], survival_BMP4_df["Survival_time_sim"], conf_type="log-log")
+plt.step(time, survival_prob, where="post")
+plt.fill_between(time, conf_int[0], conf_int[1], alpha=0.25, step="post",  label='_nolegend_')
+time, survival_prob, conf_int = kaplan_meier_estimator(survival_BMP4_df["Status"], survival_BMP4_df["Survival_time_psi_2"], conf_type="log-log")
+plt.step(time, survival_prob, where="post")
+plt.fill_between(time, conf_int[0], conf_int[1], alpha=0.25, step="post",  label='_nolegend_')
+time, survival_prob, conf_int = kaplan_meier_estimator(survival_BMP4_df["Status"], survival_BMP4_df["Survival_time_psi_5"], conf_type="log-log")
+plt.step(time, survival_prob, where="post")
+plt.fill_between(time, conf_int[0], conf_int[1], alpha=0.25, step="post",  label='_nolegend_')
+time, survival_prob, conf_int = kaplan_meier_estimator(survival_BMP4_df["Status"], survival_BMP4_df["Survival_time_psi_50"], conf_type="log-log")
+plt.step(time, survival_prob, where="post")
+plt.fill_between(time, conf_int[0], conf_int[1], alpha=0.25, step="post",  label='_nolegend_')
+time, survival_prob, conf_int = kaplan_meier_estimator(survival_BMP4_df["Status"], survival_BMP4_df["Survival_time_psi_100"], conf_type="log-log")
+plt.step(time, survival_prob, where="post")
+plt.fill_between(time, conf_int[0], conf_int[1], alpha=0.25, step="post",  label='_nolegend_')
+plt.xlim(0, 3000)
+plt.ylim(0, 1)
+plt.ylabel("Survival")
+plt.xlabel("Time (day)")
+plt.title(r"Simulated survival BMP4 only")
+plt.legend([r"Virtual control", r"Simulated BMP4 $\psi = 2$",
+            r"Simulated BMP4 $\psi = 5$", r"Simulated BMP4 $\psi = 50$", r"Simulated BMP4 $\psi = 100$"])
+plt.show()
+```

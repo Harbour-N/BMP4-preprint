@@ -1,0 +1,534 @@
+---
+title: Fit doubling times
+description: Fit the doubling times to a proliferation rate in the model
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    code-tools: true
+    highlight-style: atom-one
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+
+
+# Import packages
+
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+import matplotlib.colors as mcolors
+from scipy.optimize import minimize
+
+```
+
+# import functions
+
+all functions are in: "notebooks/gsc_model_functions.py"
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+# Load in doubling time data
+
+```{python}
+doubling_time_data = pd.read_csv("Data/Growth_rate_raw_data.csv")
+
+
+```
+
+
+
+We have experimental doubling times for some of the cell lines:
+
+-   **GBM1a** - has a doubling time of 54.71329hrs (2.2797204166666667 days), this gives a growth rate in terms rho 1/year as $m_s$ = 65 (roughly)
+
+-   **QNS120** - has a doubling time of 43.5243
+- **QNS108** - has doubling time of 109.3591
+- **QNS315** - has doubling time of 63.61046
+- **QNS522b** - 53.39421
+- **QNS657** - 75.63042
+
+
+## GBM1a 
+
+doubling time is 54.71329hrs (2.27days) according to this the growth should be 
+
+$$
+    N(t) = N_0 2^{t/T}
+$$
+
+```{python}
+
+s0 = 0.1
+N = s0*2**(48/54.71329)
+print("Expected size of colon after 48hrs for GMB1a")
+print(N)
+
+```
+
+
+Function to turn doubling time into $m_s$ value.
+
+```{python}
+
+### import params
+from gsc_model_params import *
+
+cline = "GBM1a"
+
+d_time_real = doubling_time_data["Baseline doubling time hrs"][doubling_time_data["Cells"] == "GBM1A"].values[0]
+
+def pro_objective_func(pro_rate):
+
+    t_final = 8000
+
+    dt = 0.001
+
+    s0 = 0.01
+    u0 = 0
+
+    psi = 0
+
+    Ps_max = 1
+    Ps_min = 0
+
+    max_size = 0.3
+
+    
+    mv = mv_rho_scale*pro_rate*np.ones(n) 
+    ms = ms_mv_scale*mv[0]
+    mv[n-1] = 0 
+
+
+    u,N,VS,t,tp1,tp2 = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+    
+
+    d_time_sim = (tp2 - tp1)*24
+
+
+    #print(f"Current guess: {pro_rate}")
+
+    return  np.abs(d_time_sim - d_time_real)
+
+
+
+# bound to be positive 
+bnds = [(0, None)]
+
+# Initial guess
+x0 = 65
+# Call the minimize function, it seems "powell" minimiser works best for this problem.
+m_s_estimate = minimize(pro_objective_func, x0,bounds=bnds, method="powell")
+
+print(f"Actual measured doubling time = {d_time_real}")
+#print(f"Pro rate estimated  = {m_s_estimate}")
+# estimted doubling time
+t_final = 8000
+dt = 0.001
+s0 = 0.01
+u0 = 0
+psi = 0
+Ps_max = 1
+Ps_min = 0
+max_size = 0.3
+mv = mv_rho_scale*m_s_estimate.x*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+u,N,VS,t,tp1,tp2 = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+print(f"Estimated doubling time = {(tp2-tp1)*24}")
+print(f"Estimate growth rate = {m_s_estimate}")
+
+
+```
+
+
+## QNS120
+
+doubling time is 43.5243hrs (1.8135125days) according to this the growth should be 
+
+$$
+    N(t) = N_0 2^{t/T}
+$$
+
+```{python}
+
+N = s0*2**(48/43.5243)
+print("Expected size of colon after 48hrs for GMB1a")
+print(N)
+
+```
+
+Fit the proliferation rate to doubling time
+```{python}
+
+cline = "QNS120"
+
+d_time_real = doubling_time_data["Baseline doubling time hrs"][doubling_time_data["Cells"] == cline].values[0]
+
+def pro_objective_func(pro_rate):
+
+    t_final = 8000
+
+    dt = 0.0001
+
+    s0 = 0.01
+    u0 = 0
+
+    psi = 0
+
+    Ps_max = 1
+    Ps_min = 0
+
+    max_size = 0.3
+
+    
+    mv = mv_rho_scale*pro_rate*np.ones(n) 
+    ms = ms_mv_scale*mv[0]
+    mv[n-1] = 0 
+
+
+    u,N,VS,t,tp1,tp2 = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+    
+
+    d_time_sim = (tp2 - tp1)*24
+
+
+    #print(f"Current guess: {pro_rate}")
+
+    return  np.abs(d_time_sim - d_time_real)
+
+
+
+# bound to be positive 
+bnds = [(0, None)]
+
+# Initial guess
+x0 = 81
+# Call the minimize function, it seems "powell" minimiser works best for this problem.
+m_s_estimate = minimize(pro_objective_func, x0,bounds=bnds, method="powell")
+
+print(f"Actual measured doubling time = {d_time_real}")
+#print(f"Pro rate estimated  = {m_s_estimate}")
+# estimted doubling time
+t_final = 8000
+dt = 0.0001
+s0 = 0.01
+u0 = 0
+psi = 0
+Ps_max = 1
+Ps_min = 0
+max_size = 0.3
+mv = mv_rho_scale*m_s_estimate.x*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+u,N,VS,t,tp1,tp2 = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+print(f"Estimated doubling time = {(tp2-tp1)*24}")
+print(f"Estimate growth rate = {m_s_estimate}")
+
+```
+
+
+## QNS108 
+
+Fit the proliferation rate to doubling time
+```{python}
+
+cline = "QNS108"
+
+d_time_real = doubling_time_data["Baseline doubling time hrs"][doubling_time_data["Cells"] == cline].values[0]
+
+def pro_objective_func(pro_rate):
+
+    t_final = 8000
+
+    dt = 0.0001
+
+    s0 = 0.01
+    u0 = 0
+
+    psi = 0
+
+    Ps_max = 1
+    Ps_min = 0
+
+    max_size = 0.3
+
+    
+    mv = mv_rho_scale*pro_rate*np.ones(n) 
+    ms = ms_mv_scale*mv[0]
+    mv[n-1] = 0 
+
+
+    u,N,VS,t,tp1,tp2 = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+    
+
+    d_time_sim = (tp2 - tp1)*24
+
+
+    #print(f"Current guess: {pro_rate}")
+
+    return  np.abs(d_time_sim - d_time_real)
+
+
+
+# bound to be positive 
+bnds = [(0, None)]
+
+# Initial guess
+x0 = 35
+# Call the minimize function, it seems "powell" minimiser works best for this problem.
+m_s_estimate = minimize(pro_objective_func, x0,bounds=bnds, method="powell")
+
+print(f"Actual measured doubling time = {d_time_real}")
+#print(f"Pro rate estimated  = {m_s_estimate}")
+# estimted doubling time
+t_final = 8000
+dt = 0.0001
+s0 = 0.01
+u0 = 0
+psi = 0
+Ps_max = 1
+Ps_min = 0
+max_size = 0.3
+mv = mv_rho_scale*m_s_estimate.x*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+u,N,VS,t,tp1,tp2 = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+print(f"Estimated doubling time = {(tp2-tp1)*24}")
+print(f"Estimate growth rate = {m_s_estimate}")
+
+```
+
+
+## QNS315
+
+Fit the proliferation rate to doubling time
+```{python}
+
+cline = "QNS315"
+
+d_time_real = doubling_time_data["Baseline doubling time hrs"][doubling_time_data["Cells"] == cline].values[0]
+
+def pro_objective_func(pro_rate):
+
+    t_final = 8000
+
+    dt = 0.0001
+
+    s0 = 0.01
+    u0 = 0
+
+    psi = 0
+
+    Ps_max = 1
+    Ps_min = 0
+
+    max_size = 0.3
+
+    
+    mv = mv_rho_scale*pro_rate*np.ones(n) 
+    ms = ms_mv_scale*mv[0]
+    mv[n-1] = 0 
+
+
+    u,N,VS,t,tp1,tp2 = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+    
+
+    d_time_sim = (tp2 - tp1)*24
+
+
+    #print(f"Current guess: {pro_rate}")
+
+    return  np.abs(d_time_sim - d_time_real)
+
+
+
+# bound to be positive 
+bnds = [(0, None)]
+
+# Initial guess
+x0 = 40
+# Call the minimize function, it seems "powell" minimiser works best for this problem.
+m_s_estimate = minimize(pro_objective_func, x0,bounds=bnds, method="powell")
+
+print(f"Actual measured doubling time = {d_time_real}")
+#print(f"Pro rate estimated  = {m_s_estimate}")
+# estimted doubling time
+t_final = 8000
+dt = 0.0001
+s0 = 0.01
+u0 = 0
+psi = 0
+Ps_max = 1
+Ps_min = 0
+max_size = 0.3
+mv = mv_rho_scale*m_s_estimate.x*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+u,N,VS,t,tp1,tp2 = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+print(f"Estimated doubling time = {(tp2-tp1)*24}")
+print(f"Estimate growth rate = {m_s_estimate}")
+
+```
+
+
+## QNS657
+
+Fit the proliferation rate to doubling time
+```{python}
+
+cline = "QNS657"
+
+d_time_real = doubling_time_data["Baseline doubling time hrs"][doubling_time_data["Cells"] == cline].values[0]
+
+def pro_objective_func(pro_rate):
+
+    t_final = 8000
+
+    dt = 0.0001
+
+    s0 = 0.01
+    u0 = 0
+
+    psi = 0
+
+    Ps_max = 1
+    Ps_min = 0
+
+    max_size = 0.3
+
+    
+    mv = mv_rho_scale*pro_rate*np.ones(n) 
+    ms = ms_mv_scale*mv[0]
+    mv[n-1] = 0 
+
+
+    u,N,VS,t,tp1,tp2 = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+    
+
+    d_time_sim = (tp2 - tp1)*24
+
+
+    #print(f"Current guess: {pro_rate}")
+
+    return  np.abs(d_time_sim - d_time_real)
+
+
+
+# bound to be positive 
+bnds = [(0, None)]
+
+# Initial guess
+x0 = 40
+# Call the minimize function, it seems "powell" minimiser works best for this problem.
+m_s_estimate = minimize(pro_objective_func, x0,bounds=bnds, method="powell")
+
+print(f"Actual measured doubling time = {d_time_real}")
+#print(f"Pro rate estimated  = {m_s_estimate}")
+# estimted doubling time
+t_final = 8000
+dt = 0.0001
+s0 = 0.01
+u0 = 0
+psi = 0
+Ps_max = 1
+Ps_min = 0
+max_size = 0.3
+mv = mv_rho_scale*m_s_estimate.x*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+u,N,VS,t,tp1,tp2 = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+print(f"Estimated doubling time = {(tp2-tp1)*24}")
+print(f"Estimate growth rate = {m_s_estimate}")
+
+```
+
+
+## QNS522b 
+
+Fit the proliferation rate to doubling time
+```{python}
+
+cline = "QNS522b"
+
+d_time_real = doubling_time_data["Baseline doubling time hrs"][doubling_time_data["Cells"] == cline].values[0]
+
+def pro_objective_func(pro_rate):
+
+    t_final = 8000
+
+    dt = 0.0001
+
+    s0 = 0.01
+    u0 = 0
+
+    psi = 0
+
+    Ps_max = 1
+    Ps_min = 0
+
+    max_size = 0.3
+
+    
+    mv = mv_rho_scale*pro_rate*np.ones(n) 
+    ms = ms_mv_scale*mv[0]
+    mv[n-1] = 0 
+
+
+    u,N,VS,t,tp1,tp2 = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+    
+
+    d_time_sim = (tp2 - tp1)*24
+
+
+    #print(f"Current guess: {pro_rate}")
+
+    return  np.abs(d_time_sim - d_time_real)
+
+
+
+# bound to be positive 
+bnds = [(0, None)]
+
+# Initial guess
+x0 = 50
+# Call the minimize function, it seems "powell" minimiser works best for this problem.
+m_s_estimate = minimize(pro_objective_func, x0,bounds=bnds, method="powell")
+
+print(f"Actual measured doubling time = {d_time_real}")
+#print(f"Pro rate estimated  = {m_s_estimate}")
+# estimted doubling time
+t_final = 8000
+dt = 0.0001
+s0 = 0.01
+u0 = 0
+psi = 0
+Ps_max = 1
+Ps_min = 0
+max_size = 0.3
+mv = mv_rho_scale*m_s_estimate.x*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+u,N,VS,t,tp1,tp2 = gmf.basic_growth_simulation(t_final,dt,u0,s0,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,max_size)
+print(f"Estimated doubling time = {(tp2-tp1)*24}")
+print(f"Estimate growth rate = {m_s_estimate}")
+
+```

@@ -1,0 +1,34 @@
+---
+title: Visualise the trunctated normal distirubtion for psi used in virtual trial
+description: a
+format:
+    html:
+        code-fold: true
+        toc: true
+        code-tools: true
+        embed-resources: true
+        date-modified: last-modified
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+jupyter: python3
+---
+
+
+```{python}
+
+import gsc_model_functions as gmf
+n_patients = 40
+sigma =0.01
+mu = 0.075
+samples1 = gmf.trunc_norm(mu,sigma,n_patients)
+samples2 = gmf.trunc_norm(0.15,sigma,n_patients)
+samples3 = gmf.trunc_norm(0.005,sigma,n_patients)
+
+
+plt.hist(samples1)
+plt.hist(samples2)
+plt.hist(samples3)
+plt.show()
+
+```

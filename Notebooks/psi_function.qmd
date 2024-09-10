@@ -1,0 +1,81 @@
+---
+title: Plot psi function
+description: plot the relationship between psi and Ps
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+Import pckages
+```{python}
+#| label: load_packages
+import numpy as np
+import matplotlib.pyplot as plt
+```
+
+Plot the relationship between $\psi$ and $P_s$
+
+```{python}
+#| label: fig-psi_effect
+#| fig-cap: The relationship between $\psi$ ans $P_s$. As $\psi$ increases the value of $P_s$ decreases from $P_{max}$ to $P_{min}$. The dependence on concentration of BMP4 also follows the same curve. 
+#| fig-alt: A plot of the relationship between the sensitivity parameter psi and the propensity of self renewal for GSCs, Ps.
+
+# define constnts
+Ps_min = 0.2
+Ps_max = 0.56
+
+# Create data points
+x = np.arange(0, 50, 0.25)
+z = Ps_min + (Ps_max - Ps_min)* 1 / (1 + x)
+
+# Plot the curve
+plt.plot(x,z)
+plt.xlabel(r"$\psi$", fontsize = 14)
+plt.ylabel(r"$P_s$", fontsize = 14)
+plt.xticks(fontsize = 12)
+plt.yticks(fontsize = 12)
+plt.title("Effect of varying sensitivity parameter")
+plt.tight_layout()
+#plt.savefig("../SMB_figs/psi_effect.svg")
+plt.show()
+```
+
+we can also plot a surface to see the effect of increasing BMP4 and $\psi$ which both have an analoous efect on $P_s$
+
+```{python}
+#| label: fig-surface_Ps
+#| fig-cap: The relationship between BMP4 and $\psi$, on $P_s$. As both BMP4 and $\psi$ increase the value of $P_s$ decreases from $P_{max}$ to $P_{min}$.
+#| fig-alt: a 
+
+
+# Create data points
+x = np.arange(0, 5, 0.25)
+y = np.arange(0, 5, 0.25)
+X, Y = np.meshgrid(x, y)
+Z = Ps_min + (Ps_max - Ps_min)* 1 / (1 + X * Y)
+
+# Plot the surface
+fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+ax.plot_surface(X, Y, Z, alpha = 0.9)
+
+# Customize the plot
+ax.set_title(r"Effect of BMP4 and $\psi$ on $P_s$")
+#ax.view_init(50)
+ax.set_xlabel("BMP4")
+ax.set_ylabel(r"$\psi$")
+ax.set_zlabel(r"$P_s$")
+# Show the plot
+plt.show()
+
+```

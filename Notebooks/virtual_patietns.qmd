@@ -1,0 +1,333 @@
+---
+title: Virtual patients
+description: Compared treatment scheduels in 5 virtual patients based on the cline data
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+# Import packages and define functions
+
+```{python}
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+from numba import jit
+from sksurv.compare import compare_survival
+from sksurv.nonparametric import kaplan_meier_estimator
+
+```
+
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+
+# Load in data
+
+```{python}
+
+psi_data = pd.read_csv('Data/fitted_psi_value.csv')
+pro_data = pd.read_csv('Data/pro_rates_fitted.csv')
+# RT alpha and beta data
+alpha_beta_data = pd.read_csv('Data/alpha_beta_data.csv')
+
+```
+
+
+
+# Compare different schedules in virtual patients
+first virtual patient will be GBM1a cell line 
+```{python}
+
+
+from gsc_model_params import *
+clines = psi_data["cline"]
+
+u_single = []
+N_single = []
+detect_size_single = []
+detect_t_single = []
+VS_single = []
+m_single = []
+B_single = []
+t_single = []
+
+u_cont = []
+N_cont = []
+detect_size_cont = []
+detect_t_cont = []
+VS_cont = []
+m_cont = []
+B_cont = []
+t_cont = []
+
+u_pulse = []
+N_pulse = []
+detect_size_pulse = []
+detect_t_pulse = []
+VS_pulse = []
+m_pulse = []
+B_pulse = []
+t_pulse = []
+
+# set fixed params that don't change between patients
+
+# IC
+s0 = 0.001
+u0 = np.zeros(n+1)
+u0[0] = s0
+n0 = 0.001
+s0 = 0.01*n0 # fraction of initial tumour
+v_ratio = 1.95 # ratio between successive compartments
+v0 = ((n0-s0)*(v_ratio-1)/(v_ratio**n-1))*(v_ratio**np.arange(n))
+u0 = np.zeros(n+1)
+u0[0] = s0
+u0[1:] = v0
+
+# Treatments
+rad_on = 1
+BMP4_on = 1
+resect_on = 1
+
+# set up time grid
+t_final = 8000
+dt = 0.01
+t = np.arange(0, t_final+dt/2, dt)
+
+# we want each patient to have a unique random seed so that across all simulations they get the same series of random numbers
+random_seeds = np.arange(0,len(psi_data),1)
+
+q = 0
+for cline in clines:
+
+    # extrac the pro rate value 
+    pro_rate = pro_data[pro_data['cline'] == cline].iloc[0,1]
+    # extract the psi value
+    psi = psi_data[psi_data['cline'] == cline].iloc[0,1]
+
+    mv = mv_rho_scale*pro_rate*np.ones(n)
+    ms = ms_mv_scale*mv[0]
+    mv[n-1] = 0
+
+    alpha =  alpha_beta_data[alpha_beta_data['cline'] == cline].iloc[0,1] / eta
+    beta = alpha_beta_data[alpha_beta_data['cline'] == cline].iloc[0,2] / eta
+
+
+  
+    u,N,VS,t,m,B,detect_size,detect_t,_,_ = gmf.simulate_model(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,random_seeds[q],m_init)
+
+    # save all the results
+    u_single.append(u)
+    N_single.append(N)
+    detect_size_single.append(detect_size)
+    detect_t_single.append(detect_t)
+    VS_single.append(VS)
+    m_single.append(m)
+    B_single.append(B)
+    t_single.append(t)
+
+
+    u,N,VS,t,m,B,detect_size,detect_t,_,_ = gmf.simulate_model_continuos(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,random_seeds[q],m_fixed)
+
+    # save all the results
+    u_cont.append(u)
+    N_cont.append(N)
+    detect_size_cont.append(detect_size)
+    detect_t_cont.append(detect_t)
+    VS_cont.append(VS)
+    m_cont.append(m)
+    B_cont.append(B)
+    t_cont.append(t)
+
+    u,N,VS,t,m,B,detect_size,detect_t,_,_ = gmf.simulate_model_pulsatile(t_final,dt,u0,psi,Ps_max,Ps_min,n,k,ms,mv,delta_s,delta_v,delta_m,delta_b,C,u_s,n_RT_repeat,n_RT_cycles,rad_on,alpha,beta,eta,mu,t_RT_wait,t_RT_interval,detect_threshold,detection_sensitivity,death_sensitivity,lam,resection_to_RT_delay,BMP4_on,death_threshold,resect_on,resect_fraction,random_seeds[q],m_pulse_init) 
+
+    # save all the results
+    u_pulse.append(u)
+    N_pulse.append(N)
+    detect_size_pulse.append(detect_size)
+    detect_t_pulse.append(detect_t)
+    VS_pulse.append(VS)
+    m_pulse.append(m)
+    B_pulse.append(B)
+    t_pulse.append(t)
+
+    q = q + 1
+
+```
+
+
+
+Compare different schedules
+
+```{python}
+
+plt.plot(t_single[0],N_single[0],label='Single')
+plt.plot(t_cont[0],N_cont[0],label='Continuous')
+plt.plot(t_pulse[0],N_pulse[0],label='Pulsatile')
+plt.title('GBM1a')
+plt.legend()
+plt.show()
+
+
+```
+
+
+```{python}
+
+plt.plot(t_single[1],N_single[1],label='Single')
+plt.plot(t_cont[1],N_cont[1],label='Continuous')
+plt.plot(t_pulse[1],N_pulse[1],label='Pulsatile')
+plt.title('QNS120')
+plt.legend()
+plt.show()
+
+```
+
+
+
+```{python}
+
+plt.plot(t_single[2],N_single[2],label='Single')
+plt.plot(t_cont[2],N_cont[2],label='Continuous')
+plt.plot(t_pulse[2],N_pulse[2],label='Pulsatile')
+plt.title('QNS108')
+plt.legend()
+plt.show()
+
+```
+
+```{python}
+
+plt.plot(t_single[4],N_single[4],label='Single')
+plt.plot(t_cont[4],N_cont[4],label='Continuous')
+plt.plot(t_pulse[4],N_pulse[4],label='Pulsatile')
+plt.title('QNS657')
+plt.legend()
+plt.show()
+
+```
+
+
+
+```{python}
+
+for i in range(len(clines)):
+    plt.plot(clines[i],t_single[i][-1], 'bo',label='Single')
+    plt.plot(clines[i],t_cont[i][-1], 'ro',label='Continuous')
+    plt.plot(clines[i],t_pulse[i][-1], 'go',label='Pulsatile')
+
+plt.ylabel('Survival time')
+plt.legend(['Single','Continuous','Pulsatile'])
+plt.show()
+   
+
+```
+
+
+# Schematic of treatment schedules
+
+plot a comparison of the different delivery methods
+
+```{python}
+
+
+t_RT_interval = 1 # time in days between RT doses
+t_RT_cycle = 7 # time in days between cycles
+n_RT_repeat = 5 # number of doses on RT (remainder is off)
+n_RT_cycles = 6 # number of cycles to repeat
+t_RT_wait = t_RT_cycle - t_RT_interval*n_RT_repeat # time to wait for next cycle
+resection_to_RT_delay = 30 # days from resection to RT start
+t_rad = 0 + resection_to_RT_delay # start of RT
+rad_counter = 0
+
+
+t_final = 100 
+dt = 0.01
+t = np.arange(0, t_final+dt/2, dt) # arange(a,b,c) uses the open interval [a,b) with steps c
+nt = len(t)
+m_OS = np.zeros(nt)
+B_OS = np.zeros(nt)
+
+m_p = np.zeros(nt)
+B_p = np.zeros(nt)
+
+m_const = np.ones(nt)*0.908955
+B_const = np.zeros(nt)
+
+ms = 65
+mv = 65
+psi = 2
+
+
+m_OS[0] = 30
+
+#m_p[0] = 4.2858
+
+dummy = 1
+
+for i in range(len(t)-1):
+
+    m_OS[i+1] = m_OS[i] + dt * (- delta_m * m_OS[i])
+    B_OS[i+1] = B_OS[i] + dt * (C * m_OS[i] - delta_b*B_OS[i])
+
+
+    m_p[i+1] = m_p[i] + dt * (- delta_m * m_p[i])
+    B_p[i+1] = B_p[i] + dt * (C * m_p[i] - delta_b*B_p[i])
+
+    if abs(t[i]-t_rad) < dt/2 and rad_counter % n_RT_repeat == 0 and rad_counter < n_RT_repeat*n_RT_cycles and i !=0:
+        m_p[i+1] = m_p[i] + 4.999
+
+    if rad_counter >= n_RT_repeat*n_RT_cycles: # once RT has ended then constant delivery is stopped and MSCs start decaying
+        m_const[i+1] = m_const[i] + dt * (- delta_m * m_const[i])
+
+    B_const[i+1] = B_const[i] + dt * (C * m_const[i] - delta_b*B_const[i])
+
+    # apply radiation
+    if abs(t[i]-t_rad) < dt/2 and rad_counter < n_RT_repeat*n_RT_cycles:
+        if dummy ==1:
+            dummy = -1293194
+            plt.axvline(x=t_rad, color='r', linestyle='--', alpha=0.2, linewidth=1.5, label='RT')
+        else:
+            plt.axvline(x=t_rad, color='r', linestyle='--', alpha=0.2, linewidth=1.5)
+        rad_counter = rad_counter + 1
+        if rad_counter % n_RT_repeat == 0 :
+            t_rad = t_rad + t_RT_wait # wait for next cycle
+        else:
+            t_rad = t_rad + t_RT_interval
+
+plt.plot(t, B_OS, label='Single')
+plt.plot(t, B_p, label='Pulsatile')
+plt.plot(t, B_const, label='Constant')
+plt.xlabel('Time (days)')
+plt.ylabel('Concentration')
+plt.title("No inclusion of GSC uptake but gives a rough idea of BMP4 concentration")
+plt.legend()
+plt.show()
+
+
+# integrate the BMP4 concentration to get the total BMP4 delivered
+print("Total BMP4 delivered by OS: ", np.trapz(B_OS, t))
+print("Total BMP4 delivered by P: ", np.trapz(B_p, t))
+print("Total BMP4 delivered by constant: ", np.trapz(B_const, t))
+
+
+```
+

@@ -1,0 +1,97 @@
+---
+title: "Glioma Stem Cell (GSC) - Tumour Cell (TC) model"
+authors:
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+Installed SymPy, ipykernel, yaml, pyyaml, nbformat, nbclient in gsc_tc_model conda environment. 
+
+```{python}
+from sympy import *
+init_printing()
+```
+
+```{python}
+x, y, z, t = symbols('x y z t')
+expr = (x + y)**3
+expand(expr)
+```
+
+```{python}
+solve([x*(1-x-y)-z*x, 2*y*(1-x-y)-y], x, y, dict=True)
+```
+Set up the right hand sides of the three differential equations and display them: 
+```{python}
+s, v1, v2, V, N, P_s, k, m_s, d, m_v, d_v1, d_v2 = symbols('s v1 v2 V N P_s k m_s d m_v d_v1 d_v2') 
+dsdt = (2*P_s-1)*m_s*s*(1-(s+v1+v2)/k)-d*s
+dv1dt = 2*(1-P_s)*m_s*s*(1-(s+v1+v2)/k)-m_v*v1*(1-(s+v1+v2)/k)-d_v1*v1
+dv2dt = 2*m_v*v1*(1-(s+v1+v2)/k)-d_v2*v2
+Vdef = V-v1-v2
+
+(dsdt,dv1dt,dv2dt)
+```
+
+Set up equations from steady state for third ODE for $v_2$ and $V=v_1+v_2$ to find $v_1$ and $v_2$ in terms of $V$ and $s$: 
+```{python}
+v1v2 = solve((dv2dt,Vdef),(v1,v2), dict=True)
+v1v2
+```
+These agree with our derivations by hand.  
+
+Try substituting one of these into the sum of the second and third ODEs: 
+```{python}
+dVdt = (dv1dt+dv2dt).subs(v1v2[0])
+dVdt
+```
+
+This is a bit of a mess. Try to simplify term by term, using [`Add.make_args`](https://stackoverflow.com/questions/71204136/determine-individual-terms-of-sympy-expression). 
+
+```{python}
+Add.make_args(dVdt)
+```
+
+$s$ proliferation term
+```{python}
+factor(simplify(Add.make_args(dVdt)[0]))
+```
+
+Death of $v_1$ cells: 
+```{python}
+v1_death = collect(factor(simplify(Add.make_args(dVdt)[1])),'2*m_v').subs({V+s:N})
+v1_death
+```
+
+Death of $v_2$ cells: 
+```{python}
+factor(simplify(Add.make_args(dVdt)[2]))
+```
+
+$v_1$ proliferation term: 
+```{python}
+factor(simplify(Add.make_args(dVdt)[3]))
+```
+Replace $V+s$ with $N$: 
+```{python}
+factor(simplify(Add.make_args(dVdt)[3])).subs({V+s:N})
+```
+Death of $v_1$ and $v_2$ cells: 
+```{python}
+factor(simplify(Add.make_args(dVdt)[1]+Add.make_args(dVdt)[2]))
+```
+
+
+Too much to expect this ("solve(eqns,s,v1,v2, dict=True)") to work (this would solve for steady states of the model): 
+```{python}
+# solve(eqns,s,v1,v2, dict=True)
+```

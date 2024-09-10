@@ -1,0 +1,1199 @@
+---
+title: "BMP4 RT data"
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+engine: knitr
+---
+
+# BMP + Radiotherapy data on cell lines
+
+## Background
+
+This data was from Raj Kenchappa, who provided the following from the person who did the experiment:
+
+> The group column contains CTRL=control, FBS=10% FBS, B20=BMP4 20 ng/ml, B100= 100 ng/ml, E= MSC-EV supernatant, S= MSC-BMP4 supernatant, and so on. This figure compares only control vs = 100 ng/ml BMP4. Exp column contains the technical replicates for each each experiment (att=attempt). Ncells= number of seeded cells, Ncolonies, the number of colonies, pe=plating efficiency.
+
+Part (a) of the figure in the proposal also shows death 48 hours after radiation. The legend in the proposal states:
+
+> Representative patient derived BTIC \[Brain Tumour Initiating Cells\] pre-exposed to 100ng/ml BMP4 for 48 hours followed by 2 Gy radiation show **(a)** increased cell death 48 hours after radiation and **(b)** increased intrinsic radiosensitivity.
+
+
+#### Further detail from Raj:
+
+The cells were treated with 100ng/mL of BMP4 for 48 hours, after which it was irradiated with 0, 2, 4, 6, 8, 10Gy. The cells were then further seeded as single cell suspension in 96 well plates and cultured for 3 weeks. Then counted the spheres in each well, and finally fitted the surviving fractions to the linear quadratic model when making the RS curve. Please note: This is an adaptation of a colony forming assay (CFU) for cells that grow in suspension. Here we are checking for the sphere formation, hence called sphere formation assay (SFA).
+
+#### Useful background information:
+
+[Fitting the linear–quadratic model to detailed data sets for different dose ranges (2006)](http://dx.doi.org/10.1088/0031-9155/51/11/009)
+
+[α/β ratio: A dose range dependence study (2007)](https://doi.org/10.1016/j.ijrobp.2006.10.017)
+
+[On the analysis of clonogenic survival data: Statistical alternatives to the linear-quadratic model (2016)](https://doi.org/10.1186/s13014-016-0584-z) which states that
+
+> The number of colonies was divided by the number of seeded cells and normalized on the plating efficiency of the not irradiated controls. Data from 3–4 independent experiments were used for the statistical analyses.
+
+#### Note on coordinate transformations:
+
+[There are two ways to generate plots on a log scale](https://ggplot2-book.org/coord#transformations-with-coord_trans), `scale_y_log10()` which scales data before plotting or any statistical transformation, and `coord_trans(y="log10")` which scales afterwards.
+
+**I think we want to use `coord_trans(y="log10")`** 
+
+## Load the data
+
+Load libraries:
+
+```{r}
+#| warning: false
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(tidyverse)
+library(penalized)
+```
+
+### Load data for all six cell lines:
+
+```{r}
+BMP_RT_data <- read.csv("CFA_data-BMP4-RT Human GSCs.csv")
+
+# filter doses greater than 6GY (very low survival for these)
+BMP_RT_data <- BMP_RT_data[BMP_RT_data$dose <= 6,]
+
+# reorder treatment groups to natural order starting with CTRL
+# https://r-graph-gallery.com/267-reorder-a-variable-in-ggplot2.html
+BMP_RT_data <- mutate(BMP_RT_data, group=factor(group, levels=c("CTRL","FBS","B20","B100","E20","E100","S20","S100")))
+
+clines <- unique(BMP_RT_data$cline)
+reps <- unique(BMP_RT_data$rep)
+groups <- unique(BMP_RT_data$group)
+doses <- unique(BMP_RT_data$dose)
+
+head(BMP_RT_data,10)
+```
+
+The data is a row per data point, with
+
+-   `cline`: cell line
+
+-   `p` is unclear (seems to be a number for each `att`).
+
+-   `att` is an integer, short for attempts, which are biological replicates
+
+-   `rep` is a string, e.g. `r01`, with the numerical part the same at `att`.
+
+-   `group`: treatment groups, `r levels(BMP_RT_data$group)`.
+
+-   `Exp` is technical replicates for each experiment (an experiment will apply therapies to a population of cells and then sample the population afterwards for each technical replicate - so the clonogenic assay itself is repeated).
+
+-   `dose`: radiotherapy dose (Gy),
+
+-   `ncells`: number of cells assayed for survival,
+
+-   `scene`: unsure
+
+-   `ncolonies`: number of colonies in the assay after 3 weeks, this is the number of spheroids counted.
+
+-   `pe`: plating efficiency, which we interpret as the fraction of cells surviving treatment. This is `ncolonies/ncells`.
+
+-   `token` is a string which summarises (concatenates) `cline`, `group` and `dose`.
+
+-   `group_id` is an integer that corresponds to the treatment `group.`
+
+
+### Load data extracted from previously shared figure:
+
+```{r}
+BMP_RT_data_from_image <- read.csv("BTIC-BMP4-RT-data-from-image.csv")
+BMP_RT_data_from_image <- mutate(BMP_RT_data_from_image, group=factor(group, levels=c("CTRL","FBS","E100","B100","S100")))
+```
+
+
+## Normalisation of plating efficiency
+
+
+-   `pe.norm_cline_group_biorep_by_dose0_mean`: normalises each cell line, treatment group, and biological replicate by its mean with dose=0.
+
+```{r}
+#| warning: false
+#| label: Normalisation of pe
+
+# create a new field which is pe normalised for a cell line, treatment group and biological replicate with dose=0
+BMP_RT_data$pe.norm_cline_group_biorep_by_dose0_mean <- NA
+for (cline in clines) {
+  for (rep in reps) {
+    for (group in groups) {
+      rows_cline_rep_group <- BMP_RT_data$cline==cline & BMP_RT_data$rep==rep & BMP_RT_data$group==group
+      dose0_mean <- mean(BMP_RT_data[rows_cline_rep_group & BMP_RT_data$dose==0,]$pe)
+      BMP_RT_data[rows_cline_rep_group,]$pe.norm_cline_group_biorep_by_dose0_mean <- BMP_RT_data[rows_cline_rep_group,]$pe/dose0_mean
+    }
+  }
+}
+```
+
+
+# Plot by biological replicates
+
+
+```{r}
+#| warning: false
+cline <- "GBM1a"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=interaction(rep,dose),colour=rep)) + 
+  geom_boxplot(position=position_dodge(width=0.9), outlier.shape = NA) + 
+  geom_point(position=position_dodge(width=0.9), size=1) + 
+  labs(title=paste0("GBM1a (log scale)")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10()
+  facet_wrap(vars(group))
+```
+
+```{r}
+#| warning: false
+cline <- "QNS120"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=interaction(rep,dose),colour=rep)) + 
+  geom_boxplot(position=position_dodge(width=0.9), outlier.shape = NA) + 
+  geom_point(position=position_dodge(width=0.9), size=1) + 
+  labs(title=paste0("QNS120 (log scale)")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10()
+  facet_wrap(vars(group))
+```
+
+
+```{r}
+#| warning: false
+cline <- "GBM549"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=interaction(rep,dose),colour=rep)) + 
+  geom_boxplot(position=position_dodge(width=0.9), outlier.shape = NA) + 
+  geom_point(position=position_dodge(width=0.9), size=1) + 
+  labs(title=paste0("GBM549 (log scale)")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() +
+  facet_wrap(vars(group))
+```
+
+```{r}
+#| warning: false
+cline <- "GBM626"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=interaction(rep,dose),colour=rep)) + 
+  geom_boxplot(position=position_dodge(width=0.9), outlier.shape = NA) + 
+  geom_point(position=position_dodge(width=0.9), size=1) + 
+  labs(title=paste0("GBM626 (log scale)")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() + 
+  facet_wrap(vars(group))
+```
+
+```{r}
+#| warning: false
+cline <- "GBM965"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=interaction(rep,dose),colour=rep)) + 
+  geom_boxplot(position=position_dodge(width=0.9), outlier.shape = NA) + 
+  geom_point(position=position_dodge(width=0.9), size=1) + 
+  labs(title=paste0("GBM965 (log scale)")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() + 
+  facet_wrap(vars(group))
+```
+
+# Only include doses of 100 
+
+```{r}
+#| warning: false
+
+pp <- ggplot(BMP_RT_data[!str_detect(BMP_RT_data$group,"20"),], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("Cell lines, different treatments, each relative to control")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() +
+  facet_wrap(vars(cline), scales = "free")
+
+print(pp)
+```
+
+There are some weird things going on i.e. some seem to have higher survival at 4gy than at 2gy this is because not all biological replicates have results for all doses. Lets onl include relicates that have all RT doses.
+
+```{r}
+#| warning: false
+cline <- "GBM1a"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20"),], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("GBM1a")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() 
+
+```
+
+
+```{r}
+#| warning: false
+cline <- "GBM549"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20"),], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("GBM549")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() 
+
+```
+
+
+```{r}
+#| warning: false
+cline <- "GBM626"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20"),], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("GBM626")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() 
+
+```
+
+```{r}
+#| warning: false
+cline <- "GBM965"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20"),], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("GBM965")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10()
+
+```
+
+```{r}
+#| warning: false
+cline <- "QNS120"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20"),], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("QNS120")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() 
+
+```
+
+
+# Filter each cell line for replicates with 0,6 doses
+
+```{r}
+# create a new field which is true if the replicate has required doses
+BMP_RT_data$required_doses <- FALSE
+for (cline in clines) {
+  for (rep in reps) {
+    for (group in groups) {
+      rows_cline_rep <- BMP_RT_data$cline==cline & BMP_RT_data$rep==rep & BMP_RT_data$group==group
+      if (setequal(unique(BMP_RT_data[rows_cline_rep,]$dose),doses)) { 
+        BMP_RT_data[rows_cline_rep,]$required_doses = TRUE 
+      }
+    }
+  }
+}
+```
+
+
+Plot the data for the complete data set:
+
+```{r}
+for (cline in clines) {
+
+# https://ggplot2.tidyverse.org/reference/facet_wrap.html
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=interaction(rep,dose),colour=rep)) + 
+  geom_boxplot(position=position_dodge(width=0.9), outlier.shape = NA) + 
+  geom_point(position=position_dodge(width=0.9), size=1) + 
+  labs(title=paste0(cline,", raw data for complete dose sets, coloured by bio rep")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() +
+  facet_wrap(vars(group),drop=FALSE)
+print(pp)
+}
+```
+
+## Only include doses of 100 
+
+```{r}
+#| warning: false
+
+pp <- ggplot(BMP_RT_data[!str_detect(BMP_RT_data$group,"20") & BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("Cell lines, different treatments, each relative to control")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() +
+  facet_wrap(vars(cline), scales = "free")
+
+print(pp)
+```
+
+plot each one individually
+
+```{r}
+#| warning: false
+cline <- "GBM1a"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("GBM1a")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() 
+
+```
+
+
+```{r}
+#| warning: false
+cline <- "GBM549"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("GBM549")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10()
+
+```
+
+
+```{r}
+#| warning: false
+cline <- "GBM626"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("GBM626")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() 
+
+```
+
+```{r}
+#| warning: false
+cline <- "GBM965"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("GBM965")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10()
+
+```
+
+```{r}
+#| warning: false
+cline <- "QNS120"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("QNS120")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() 
+
+```
+
+## Plot only CTRL B100 S100
+
+```{r}
+#| warning: false
+cline <- "GBM1a"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20")& !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("GBM1a")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() 
+
+```
+
+
+```{r}
+#| warning: false
+cline <- "GBM549"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20")& !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("GBM549")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() 
+
+```
+
+
+```{r}
+#| warning: false
+cline <- "GBM626"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100")& BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("GBM626")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() 
+
+```
+
+```{r}
+#| warning: false
+cline <- "GBM965"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20")& !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("GBM965")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10() 
+
+```
+
+```{r}
+#| warning: false
+cline <- "QNS120"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("QNS120")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10()
+
+```
+
+Markus plot: how you plot the axis seems to have an effect?
+```{r}
+pp <- ggplot(BMP_RT_data[!str_detect(BMP_RT_data$group,"20") & BMP_RT_data$cline=="QNS120" & (BMP_RT_data$rep=="r01" | BMP_RT_data$rep=="r02"),], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("Cell lines, different treatments, each relative to dose=0")) + 
+  scale_x_continuous(breaks=doses) + 
+ scale_y_log10()
+
+print(pp)
+```
+
+What they plotted is with coord_trans(y="log10"), but this will cause errors with inf values for log(0) for some cell lines
+
+```{r}
+#| warning: false
+cline <- "QNS120"
+
+ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun=mean, geom="line", linewidth=1) +
+  stat_summary(fun.data = mean_se) + 
+  labs(title=paste0("QNS120")) + 
+  scale_x_continuous(breaks=doses) + 
+  coord_trans(y="log10")
+
+```
+
+
+# Fit LQ model
+
+
+Fit the LQ model using non-linear least squares and print the results.
+
+```{r}
+predicted_survival_df = data.frame()
+LQ_params = data.frame()
+
+for (cline in clines[clines!="U87"]) {
+  for (group in groups[!str_detect(groups,"20")]) {
+    temp_data <- BMP_RT_data[BMP_RT_data$cline==cline & BMP_RT_data$group==group & BMP_RT_data$required_doses==TRUE,]
+
+    quadratic.model <- nls(pe.norm_cline_group_biorep_by_dose0_mean ~ I(exp(-(A*dose+B*dose^2))), data = temp_data, start = list(A=0.1,B=0.01), lower = list(0,0), algorithm = "port", trace = FALSE)
+
+    param_label <- c("A","B")
+    LQ_params <- rbind(LQ_params,data.frame(cline=cline,group=group,coef=coef(quadratic.model),param_label=param_label))
+    
+    dosevalues <- seq(0,6,0.1)
+    
+    predicted_survival <- predict(quadratic.model, list(dose=dosevalues))
+    
+    predicted_survival_df <- rbind(predicted_survival_df,data.frame(cline=cline,dose=dosevalues,survival=predicted_survival,group=group))
+  }
+}
+
+print(LQ_params)
+
+pp <- ggplot(BMP_RT_data[!str_detect(BMP_RT_data$group,"20") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("nls fit: keeping pe=zero, require non-negative parameters")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) + 
+  geom_line(data=predicted_survival_df,aes(x=dose,y=survival,group=group,colour=group),linewidth=1) + 
+  facet_wrap(vars(cline),scales = "free")
+
+#print(pp)
+
+print(pp + coord_trans(y="log10",ylim=c(0.01,1.1)))
+```
+
+
+
+GBM1a
+```{r}
+
+cline = "GBM1a"
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("nls fit: keeping pe=zero, require non-negative parameters")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) + 
+  geom_line(data=predicted_survival_df[predicted_survival_df$cline == cline & !str_detect(predicted_survival_df$group,"FBS") & !str_detect(predicted_survival_df$group,"E100"),],aes(x=dose,y=survival,group=group,colour=group),linewidth=1) + 
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+
+```
+
+QNS120
+```{r}
+
+cline = "QNS120"
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("nls fit: keeping pe=zero, require non-negative parameters")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) + 
+  geom_line(data=predicted_survival_df[predicted_survival_df$cline == cline & !str_detect(predicted_survival_df$group,"FBS") & !str_detect(predicted_survival_df$group,"E100"),],aes(x=dose,y=survival,group=group,colour=group),linewidth=1) + 
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+
+```
+
+GBM549
+```{r}
+
+cline = "GBM549"
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("nls fit: keeping pe=zero, require non-negative parameters")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) + 
+  geom_line(data=predicted_survival_df[predicted_survival_df$cline == cline & !str_detect(predicted_survival_df$group,"FBS") & !str_detect(predicted_survival_df$group,"E100"),],aes(x=dose,y=survival,group=group,colour=group),linewidth=1) + 
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+
+```
+
+GBM626
+```{r}
+
+cline = "GBM626"
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("nls fit: keeping pe=zero, require non-negative parameters")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) + 
+  geom_line(data=predicted_survival_df[predicted_survival_df$cline == cline & !str_detect(predicted_survival_df$group,"FBS") & !str_detect(predicted_survival_df$group,"E100"),],aes(x=dose,y=survival,group=group,colour=group),linewidth=1) + 
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+
+```
+
+GBM965
+```{r}
+
+cline = "GBM965"
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("nls fit: keeping pe=zero, require non-negative parameters")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) + 
+  geom_line(data=predicted_survival_df[predicted_survival_df$cline == cline & !str_detect(predicted_survival_df$group,"FBS") & !str_detect(predicted_survival_df$group,"E100"),],aes(x=dose,y=survival,group=group,colour=group),linewidth=1) + 
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+
+```
+
+
+
+
+# Fit DLQ model
+
+Fit a dual linear-quadratic model, this incorporates 2 cell populations.
+
+We need to use the `optim` function to find the best parameters for this more complecated model as the nls function gives an error.
+
+```{r}
+
+DLQ_params = data.frame()
+
+for (cline in clines[clines!="U87"]) {
+  for (group in groups[!str_detect(groups,"20")]) {
+    temp_data <- BMP_RT_data[BMP_RT_data$cline==cline & BMP_RT_data$group==group & BMP_RT_data$required_doses==TRUE,]
+
+    # Define your custom objective function (e.g., sum of squared residuals)
+    custom_obj <- function(params) {
+      F <- params[1]
+      alpha <- params[2]
+      beta <- params[3]
+      alpha2 <- params[4]
+      beta2 <- params[5]
+      D <- temp_data$dose
+      pe <- temp_data$pe.norm_cline_group_biorep_by_dose0_mean
+      #predicted <- F*exp(-(alpha*D + beta*D^2)) + (1-F)*exp(-(alpha*D + beta*D^2))
+      predicted <- F*exp(-(alpha*D + beta*D^2)) + (1-F)*exp(-(alpha2*D + beta2*D^2))
+      residuals <- pe - predicted
+      sum(residuals^2) # minimise this
+    }
+
+    # Set initial parameter guesses
+    initial_params <- c(1,0.1,0.01,0.1,0.01)
+
+    # Optimize
+    result <- optim(par = initial_params, fn = custom_obj,lower = c(0,0,0,0,0), upper = c(1,1,1,1,1), method = "L-BFGS-B")
+    param_naems = c("F","alpha","beta","alpha2","beta2")
+    DLQ_params <- rbind(DLQ_params,data.frame(cline=cline,group=group,coef=result$par,param_label=param_naems))
+
+  }
+}
+
+print(head(DLQ_params))
+
+```
+
+
+I guess the idea would be that in the CTRL there is 100% GSCs so we do not need to fit the more commpleicated dual compartment model but when we add BMP4 there is an increase in RT effect caused by change in populations.
+
+```{r}
+
+DLQ_params_BMP = data.frame()
+
+for (cline in clines[clines!="U87"]) {
+  for (group in groups[!str_detect(groups,"20") & !str_detect(groups,"CTRL") & !str_detect(groups,"FBS") & !str_detect(groups,"E")]) {
+    temp_data <- BMP_RT_data[BMP_RT_data$cline==cline & BMP_RT_data$group==group & BMP_RT_data$required_doses==TRUE,]
+
+    # Define your custom objective function (e.g., sum of squared residuals)
+    custom_obj <- function(params) {
+      F <- params[1] # fraction of GSC
+      alpha <- params[2] # sensativity of GSCs to RT
+      beta <- params[3] # sensativity of GSCs to RT
+      D <- temp_data$dose
+      pe <- temp_data$pe.norm_cline_group_biorep_by_dose0_mean
+      #predicted <- F*exp(-(alpha*D + beta*D^2)) + (1-F)*exp(-(alpha*D + beta*D^2))
+      predicted <- F*exp(-0.13*(alpha*D + beta*D^2)) + (1-F)*exp(-(alpha*D + beta*D^2))
+      residuals <- pe - predicted
+      sum(residuals^2) # minimise this
+    }
+
+    # Set initial parameter guesses
+    initial_params <- c(0.4,0.1,0.01)
+
+    # Optimize
+    result <- optim(par = initial_params, fn = custom_obj,lower = c(0,0,0), upper = c(0.9,1,1), method = "L-BFGS-B")
+    param_naems = c("F","alpha","beta")
+    DLQ_params_BMP <- rbind(DLQ_params_BMP,data.frame(cline=cline,group=group,coef=result$par,param_label=param_naems))
+
+  }
+}
+
+print(DLQ_params_BMP)
+
+```
+
+Plot some example fits GBM1a
+
+```{r}
+
+my_DLQ_model <- function(D,F,alpha,beta) {
+  F*exp(-0.13*(alpha*D + beta*D^2)) + (1-F)*exp(-(alpha*D + beta*D^2))
+}
+
+cline = "GBM1a"
+
+x <- seq(from = 0, to = 6, length.out = 101)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[2],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[3])
+mat <- cbind(x, y)
+df_B100 <- as.data.frame(mat)
+
+print("Fraction of GSC with B100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1])
+
+x <- seq(from = 0, to = 6, length.out = 11)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[2],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[3])
+mat <- cbind(x, y)
+df_S100 <- as.data.frame(mat)
+
+print("Fraction of GSC with S100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1])
+
+
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("DLQ fit GBM1a")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) +
+  geom_line(data=df_B100,aes(x=x,y=y),colour="green") +
+  geom_line(data=df_S100,aes(x=x,y=y),colour="blue") +
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+
+```
+
+
+QNS120
+```{r}
+
+cline = "QNS120"
+
+x <- seq(from = 0, to = 6, length.out = 101)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[2],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[3])
+mat <- cbind(x, y)
+df_B100 <- as.data.frame(mat)
+
+print("Fraction of GSC with B100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1])
+
+x <- seq(from = 0, to = 6, length.out = 11)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[2],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[3])
+mat <- cbind(x, y)
+df_S100 <- as.data.frame(mat)
+
+print("Fraction of GSC with S100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1])
+
+
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("DLQ fit QNS120")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) +
+  geom_line(data=df_B100,aes(x=x,y=y),colour="green") +
+  geom_line(data=df_S100,aes(x=x,y=y),colour="blue") +
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+```
+
+
+GBM549
+```{r}
+cline = "GBM549"
+
+x <- seq(from = 0, to = 6, length.out = 101)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[2],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[3])
+mat <- cbind(x, y)
+df_B100 <- as.data.frame(mat)
+
+print("Fraction of GSC with B100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1])
+
+x <- seq(from = 0, to = 6, length.out = 11)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[2],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[3])
+mat <- cbind(x, y)
+df_S100 <- as.data.frame(mat)
+
+print("Fraction of GSC with S100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1])
+
+
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("DLQ fit GBM549")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) +
+  geom_line(data=df_B100,aes(x=x,y=y),colour="green") +
+  geom_line(data=df_S100,aes(x=x,y=y),colour="blue") +
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+```
+
+GBM626
+```{r}
+cline = "GBM626"
+
+x <- seq(from = 0, to = 6, length.out = 101)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[2],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[3])
+mat <- cbind(x, y)
+df_B100 <- as.data.frame(mat)
+
+print("Fraction of GSC with B100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1])
+
+x <- seq(from = 0, to = 6, length.out = 11)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[2],DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[3])
+mat <- cbind(x, y)
+df_S100 <- as.data.frame(mat)
+
+print("Fraction of GSC with S100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1])
+
+
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("DLQ fit GBM626")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) +
+  geom_line(data=df_B100,aes(x=x,y=y),colour="green") +
+  geom_line(data=df_S100,aes(x=x,y=y),colour="blue") +
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+```
+
+
+# Fit DLQ using alpha and beta from LQ CTRL fit
+
+```{r}
+
+# Extract the alpha and beta values from the LQ fit for the CTRL group
+LQ_params_CTRL = LQ_params[LQ_params$group=="CTRL",]
+
+
+DLQ_params_BMP = data.frame()
+
+for (cline in clines[clines!="U87"]) {
+  for (group in groups[!str_detect(groups,"20") & !str_detect(groups,"CTRL") & !str_detect(groups,"FBS") & !str_detect(groups,"E")]) {
+    temp_data <- BMP_RT_data[BMP_RT_data$cline==cline & BMP_RT_data$group==group & BMP_RT_data$required_doses==TRUE,]
+
+    # Define your custom objective function (e.g., sum of squared residuals)
+    custom_obj <- function(params) {
+      F <- params[1] # fraction of GSC
+      alpha <- LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[1] 
+      beta <- LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[2] 
+      D <- temp_data$dose
+      pe <- temp_data$pe.norm_cline_group_biorep_by_dose0_mean
+      predicted <- F*exp(-(alpha*D + beta*D^2)) + (1-F)*exp(-(100/13)*(alpha*D + beta*D^2)) #if we are assuming alpha and beta from GSCs then we need to times them to get TC effect
+      residuals <- pe - predicted
+      sum(residuals^2) # minimise this
+    }
+
+    # Set initial parameter guesses
+    initial_params <- c(0.7)
+
+    # Optimize
+    result <- optim(par = initial_params, fn = custom_obj,lower = c(0), upper = c(0.999), method = "L-BFGS-B")
+    param_naems = c("F")
+    DLQ_params_BMP <- rbind(DLQ_params_BMP,data.frame(cline=cline,group=group,coef=result$par,param_label=param_naems))
+
+  }
+}
+
+
+print(DLQ_params_BMP)
+
+
+```
+
+
+GBM1a
+
+```{r}
+cline = "GBM1a"
+
+x <- seq(from = 0, to = 6, length.out = 101)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1], LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[1] * (100/13) ,LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[2] * (100/13))
+mat <- cbind(x, y)
+df_B100 <- as.data.frame(mat)
+
+print("Fraction of GSC with B100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1])
+
+x <- seq(from = 0, to = 6, length.out = 11)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1], LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[1] * (100/13) ,LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[2] * (100/13))
+mat <- cbind(x, y)
+df_S100 <- as.data.frame(mat)
+
+print("Fraction of GSC with S100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1])
+
+
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("DLQ fit GBM1a")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) +
+  geom_line(data=df_B100,aes(x=x,y=y),colour="green") +
+  geom_line(data=df_S100,aes(x=x,y=y),colour="blue") +
+  geom_line(data=predicted_survival_df[predicted_survival_df$cline == cline & str_detect(predicted_survival_df$group,"CTRL") ,],aes(x=dose,y=survival,group=group,colour=group),linewidth=1) +
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+
+```
+
+QNS120
+```{r}
+cline = "QNS120"
+
+x <- seq(from = 0, to = 6, length.out = 101)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1], LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[1] * (100/13) ,LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[2] * (100/13))
+mat <- cbind(x, y)
+df_B100 <- as.data.frame(mat)
+
+print("Fraction of GSC with B100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1])
+
+x <- seq(from = 0, to = 6, length.out = 11)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1], LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[1] * (100/13) ,LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[2] * (100/13))
+mat <- cbind(x, y)
+df_S100 <- as.data.frame(mat)
+
+print("Fraction of GSC with S100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1])
+
+
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("DLQ fit QNS120")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) +
+  geom_line(data=df_B100,aes(x=x,y=y),colour="green") +
+  geom_line(data=df_S100,aes(x=x,y=y),colour="blue") +
+  geom_line(data=predicted_survival_df[predicted_survival_df$cline == cline & str_detect(predicted_survival_df$group,"CTRL") ,],aes(x=dose,y=survival,group=group,colour=group),linewidth=1) +
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+
+```
+
+GBM549
+
+```{r}
+cline = "GBM549"
+
+x <- seq(from = 0, to = 6, length.out = 101)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1], LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[1] * (100/13) ,LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[2] * (100/13))
+mat <- cbind(x, y)
+df_B100 <- as.data.frame(mat)
+
+print("Fraction of GSC with B100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1])
+
+x <- seq(from = 0, to = 6, length.out = 11)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1], LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[1] * (100/13) ,LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[2] * (100/13))
+mat <- cbind(x, y)
+df_S100 <- as.data.frame(mat)
+
+print("Fraction of GSC with S100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1])
+
+
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("DLQ fit GBM549")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) +
+  geom_line(data=df_B100,aes(x=x,y=y),colour="green") +
+  geom_line(data=df_S100,aes(x=x,y=y),colour="blue") +
+  geom_line(data=predicted_survival_df[predicted_survival_df$cline == cline & str_detect(predicted_survival_df$group,"CTRL") ,],aes(x=dose,y=survival,group=group,colour=group),linewidth=1) +
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+
+```
+
+GBM965
+
+```{r}
+cline = "GBM965"
+
+x <- seq(from = 0, to = 6, length.out = 101)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1], LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[1] * (100/13) ,LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[2] * (100/13))
+mat <- cbind(x, y)
+df_B100 <- as.data.frame(mat)
+
+print("Fraction of GSC with B100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1])
+
+x <- seq(from = 0, to = 6, length.out = 11)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1], LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[1] * (100/13) ,LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[2] * (100/13))
+mat <- cbind(x, y)
+df_S100 <- as.data.frame(mat)
+
+print("Fraction of GSC with S100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1])
+
+
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("DLQ fit GBM965")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) +
+  geom_line(data=df_B100,aes(x=x,y=y),colour="green") +
+  geom_line(data=df_S100,aes(x=x,y=y),colour="blue") +
+  geom_line(data=predicted_survival_df[predicted_survival_df$cline == cline & str_detect(predicted_survival_df$group,"CTRL") ,],aes(x=dose,y=survival,group=group,colour=group),linewidth=1) +
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+
+```
+
+GBM626
+```{r}
+cline = "GBM626"
+
+x <- seq(from = 0, to = 6, length.out = 101)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1], LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[1] * (100/13) ,LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[2] * (100/13))
+mat <- cbind(x, y)
+df_B100 <- as.data.frame(mat)
+
+print("Fraction of GSC with B100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="B100",]$coef[1])
+
+x <- seq(from = 0, to = 6, length.out = 11)
+y <- my_DLQ_model(x,DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1], LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[1] * (100/13) ,LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[2] * (100/13))
+mat <- cbind(x, y)
+df_S100 <- as.data.frame(mat)
+
+print("Fraction of GSC with S100")
+print(DLQ_params_BMP[DLQ_params_BMP$cline==cline & DLQ_params_BMP$group=="S100",]$coef[1])
+
+
+
+pp <- ggplot(BMP_RT_data[BMP_RT_data$cline==cline & !str_detect(BMP_RT_data$group,"20") & !str_detect(BMP_RT_data$group,"FBS") & !str_detect(BMP_RT_data$group,"E100") & BMP_RT_data$required_doses==TRUE & BMP_RT_data$pe>=0,], aes(x=dose, y=pe.norm_cline_group_biorep_by_dose0_mean, group=group,colour=group)) + 
+  stat_summary(fun=mean, geom="point", shape=20, size=2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width=0.5) + 
+  geom_point() + 
+  labs(title=paste0("DLQ fit GBM626")) + 
+  scale_x_continuous(breaks=doses) + 
+  scale_y_continuous(breaks=seq(0,1.25,0.25)) +
+  geom_line(data=df_B100,aes(x=x,y=y),colour="green") +
+  geom_line(data=df_S100,aes(x=x,y=y),colour="blue") +
+  geom_line(data=predicted_survival_df[predicted_survival_df$cline == cline & str_detect(predicted_survival_df$group,"CTRL") ,],aes(x=dose,y=survival,group=group,colour=group),linewidth=1) +
+  coord_trans(y="log10",ylim=c(0.01,1.1))
+
+print(pp)
+
+```
+
+
+
+# Fit DLQ F and gamma
+
+```{r}
+
+# Extract the alpha and beta values from the LQ fit for the CTRL group
+LQ_params_CTRL = LQ_params[LQ_params$group=="CTRL",]
+
+
+DLQ_params_BMP = data.frame()
+
+for (cline in clines[clines!="U87"]) {
+  for (group in groups[!str_detect(groups,"20") & !str_detect(groups,"CTRL") & !str_detect(groups,"FBS") & !str_detect(groups,"E")]) {
+    temp_data <- BMP_RT_data[BMP_RT_data$cline==cline & BMP_RT_data$group==group & BMP_RT_data$required_doses==TRUE,]
+
+    # Define your custom objective function (e.g., sum of squared residuals)
+    custom_obj <- function(params) {
+      F <- params[1] # fraction of GSC
+      gamma <- params[2]
+      alpha <- LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[1] 
+      beta <- LQ_params_CTRL[LQ_params_CTRL$cline == cline,]$coef[2] 
+      D <- temp_data$dose
+      pe <- temp_data$pe.norm_cline_group_biorep_by_dose0_mean
+      #predicted <- F*exp(-(alpha*D + beta*D^2)) + (1-F)*exp(-(alpha*D + beta*D^2))
+      predicted <- F*exp(-(alpha*D + beta*D^2)) + (1-F)*exp(-gamma*(alpha*D + beta*D^2))
+      residuals <- pe - predicted
+      sum(residuals^2) # minimise this
+    }
+
+    # Set initial parameter guesses
+    initial_params <- c(0.4,0.13)
+
+    # Optimize
+    result <- optim(par = initial_params, fn = custom_obj,lower = c(0,0), upper = c(0.9,100), method = "L-BFGS-B")
+    param_naems = c("F","gamma")
+    DLQ_params_BMP <- rbind(DLQ_params_BMP,data.frame(cline=cline,group=group,coef=result$par,param_label=param_naems))
+
+  }
+}
+
+
+print(DLQ_params_BMP)
+
+
+```

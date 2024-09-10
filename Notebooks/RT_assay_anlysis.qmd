@@ -1,0 +1,1048 @@
+---
+title: RT assay
+description: Simulate the RT assay of Q's group with our model
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    code-tools: true
+    highlight-style: atom-one
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+# Import packages
+
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+import matplotlib.colors as mcolors
+from scipy.optimize import minimize
+
+```
+
+# import functions
+
+all functions are in: "notebooks/gsc_model_functions.py"
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+# Load the data
+
+```{python}
+# doubling time data
+doubling_time_data = pd.read_csv("Data/Growth_rate_raw_data.csv")
+# fitted proliferation rates to the doubling time
+fitted_pro_rates = pd.read_csv("Data/Pro_rates_fitted.csv")
+# RT survival data (with normalised pe)
+rt_df = pd.read_csv("Data/rt_df.csv")
+# psi fits
+psi_fits = pd.read_csv("Data/fitted_psi_value.csv")
+
+
+```
+
+# Simulations of radiotherapy assays.
+
+We have experimental doubling times for some of the cell lines GBM1a, QS120, QNS108, QNS315, QNS657, QNS522b. This means we can simulate the RT assay, where cells where grown for 2 days under different conditions and then undergo RT.
+
+
+## GBM1a 
+
+doubling time is 54.71329hrs (2.27days) according to this the growth should be 
+
+$$
+    N(t) = N_0 2^{t/T}
+$$
+
+```{python}
+
+s0 = 0.1
+N = s0*2**(48/54.71329)
+print("Expected size of colon after 48hrs for GMB1a")
+print(N)
+
+```
+
+
+
+```{python}
+
+cline = "GBM1a"
+
+### import params
+from gsc_model_params import *
+
+### override some parameters ###
+Ps_max = 1 # Max probability of self renewal
+Ps_min = 0 
+
+s0 = 0.1 # Initial GSCs
+dt = 0.01 # time step
+t_rad = 2 # time of radiotherapy
+t_assay = dt # time of assay after radiotherapy
+t_final = t_rad + t_assay
+
+RT_doses = [0,2,4,6] # diffent doses of radiation used in assay
+psi_values = [0,psi_fits[psi_fits["cline"]==cline]["Psi_10"].iloc[0]] # estimated psi value 
+psi_colors = list(mcolors.TABLEAU_COLORS)
+
+BMP4_dose = 100 # bmp4 dose is now fixed
+
+nRT = len(RT_doses) # number of RT doses
+npsi = len(psi_values) # number of BMP4 doses
+
+# to store time and tumor size at RT and survival assay
+RT_pre_size = np.zeros((nRT,npsi))
+RT_pre_t = np.zeros((nRT,npsi))
+RT_post_size = np.zeros((nRT,npsi))
+RT_post_t = np.zeros((nRT,npsi))
+assay_size = np.zeros((nRT,npsi))
+assay_t = np.zeros((nRT,npsi))
+
+#pro_rate = m_s_estimate.x
+pro_rate = fitted_pro_rates[fitted_pro_rates["cline"] == cline]["pro_rate"].iloc[0] # value from the fit
+
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# calc alpha as proportional to rho
+#alpha = gmf.calc_alpha_from_rho(pro_rate, alpha_rho_scale)
+#beta = gmf.calc_beta(alpha, ratio=3)
+
+# According to the RT data fits for GBM1a we get
+#alpha = 0.1831989172651574 / eta
+#beta = 0.08989100165103327 / eta
+
+# Assuming alpha/beta = 10 fixed
+alpha = 0.33841873 / eta
+beta = (0.33841873/10) / eta
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+# set up array to store model solution
+u_all = []
+VS_all = []
+N_all = []
+
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        # set up array to store model solution
+        u = np.zeros((nt,n+1))
+        VS = np.zeros(nt)
+        N = np.zeros(nt)
+
+        # define IC
+        u[0,0] = s0
+        VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+        N[0] = u[0,0] + VS[0]
+
+        i = 0
+        while t[i] < t_final:
+                if t[i] <= t_rad : 
+                    Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi_values[ipsi]*BMP4_dose))
+                else : 
+                    Ps = Ps_max
+
+                u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                # apply radiation
+                if t[i] == t_rad :
+                    u[i+1,:] = gmf.radiation(u[i+1,:],alpha,beta,eta,mu,d=RT_doses[j])
+                    RT_pre_size[j,ipsi] = np.sum(u[i,:])
+                    RT_pre_t[j,ipsi] = t[i]        
+                    RT_post_size[j,ipsi] = np.sum(u[i+1,:])
+                    RT_post_t[j,ipsi] = t[i+1]        
+                    
+                VS[i+1] = np.sum(u[i+1,1:n+1])
+                N[i+1] = u[i+1,0] + VS[i+1]
+                            
+                i = i + 1
+
+        u_all.append(u)
+        VS_all.append(VS)
+        N_all.append(N)
+        #print("Actuall size after 48hrs")
+        #print(N[-2]) # need to print second last item as the last one has had RT applied
+
+print("Stem cell fraction just before RT")
+print(1- VS[-2]/N[-2])   
+print("According to DLQ stem cell fraction should be")
+print(0.57068221)
+
+```
+
+
+
+```{python}
+
+fig, axs = plt.subplots(2, sharex=True)
+w = 0
+BMP4_colors = list(mcolors.TABLEAU_COLORS)
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        axs[1].plot(t,1 - VS_all[w]/N_all[w], psi_colors[ipsi], alpha=1) 
+        axs[0].plot(t,N_all[w],psi_colors[ipsi], alpha = 0.25)
+
+        axs[0].plot(RT_pre_t[j,ipsi],RT_pre_size[j,ipsi],'r*',label='_nolegend_', markersize = 7)
+        axs[0].plot(RT_post_t[j,ipsi],RT_post_size[j,ipsi],'g*',label='_nolegend_', markersize = 7)
+
+        w = w + 1
+
+axs[1].set_xlabel("Time (days)", fontsize=14)
+axs[1].set_ylabel("Stem fraction", fontsize=14)
+axs[0].set_ylabel("Tumour density", fontsize=14)
+#fig.suptitle("Simulated RT assay")
+leg = axs[0].legend([r"$\psi = 0$", fr"$\psi = {psi_values[1]:.3g}$"], loc='upper left',fontsize=12)
+leg.legend_handles[0].set_color('tab:blue')
+leg.legend_handles[1].set_color('tab:orange')
+#leg.legend_handles[2].set_color('tab:green')
+#leg.legend_handles[3].set_color('tab:red')
+#leg.legend_handles[4].set_color('tab:purple')
+leg.legend_handles[0].set_alpha(1)
+leg.legend_handles[1].set_alpha(1)
+#leg.legend_handles[2].set_alpha(1)
+#leg.legend_handles[3].set_alpha(1)
+#leg.legend_handles[4].set_alpha(1)
+# Increase font size of x-ticks and y-ticks
+axs[0].tick_params(axis='both', which='major', labelsize=14)
+axs[1].tick_params(axis='both', which='major', labelsize=14)
+plt.tight_layout()
+plt.savefig("png/simulated_RT_assay_GBM1a.png")
+plt.savefig("../Manuscript/images/png/simulated_RT_assay_GBM1a.png")
+plt.savefig("svg/simulated_RT_assay_GBM1a.svg")
+plt.show()
+
+```
+
+
+
+Plot with the real data.
+```{python}
+
+
+# plot the data
+plt.figure()
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+RT_to_plot = RT_post_size/RT_post_size[0,:]
+#plt.plot(RT_doses,RT_post_size/RT_post_size[0,:],'-*')
+plt.plot(RT_doses, RT_to_plot[:,0],'b-*')
+plt.plot(RT_doses, RT_to_plot[:,1],'-*', color='orange')
+
+# Create legend and adjust its transparency
+legend = plt.legend(["CTRL data", "BMP4 data", "CTRL fit", "BMP4 fit"], fontsize=12)
+for lh in legend.legend_handles:
+    lh.set_alpha(0.5)  # Set full opacity for legend entries
+plt.xlabel("Dose (Gy)",fontsize=14)
+plt.ylabel("Normalised surving fraction", fontsize=14)
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str,fontsize=14)
+plt.xticks(fontsize=14)
+plt.tight_layout()
+plt.savefig("png/simulated_dose_response_GBM1a.png")
+plt.savefig("../Manuscript/images/png/simulated_dose_response_GBM1a.png")
+plt.savefig("svg/simulated_dose_response_GBM1a.svg")
+plt.show()
+
+```
+
+
+
+## QNS120
+
+doubling time is 43.5243hrs (1.8135125days) according to this the growth should be 
+
+$$
+    N(t) = N_0 2^{t/T}
+$$
+
+```{python}
+
+N = s0*2**(48/43.5243)
+print("Expected size of colon after 48hrs for GMB1a")
+print(N)
+
+```
+
+
+```{python}
+
+cline = "QNS120"
+
+#pro_rate = m_s_estimate.x
+pro_rate = fitted_pro_rates[fitted_pro_rates["cline"] == cline]["pro_rate"].iloc[0] # value from the fit
+
+t_final = t_rad + t_assay
+
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+
+# According to the RT data fits for QNS120 we get
+#alpha = 0.014037184418926985 / eta 
+#beta =  0.03455851742606245 / eta
+
+# Assuming alpha/beta = 10 fixed
+alpha = 0.11569914 / eta
+beta = (0.11569914/10) / eta
+
+psi_values = [0,psi_fits[psi_fits["cline"]==cline]["Psi_10"].iloc[0]] # different values of psi used in assay
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+
+# set up array to store model solution
+u_all = []
+VS_all = []
+N_all = []
+
+
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        # set up array to store model solution
+        u = np.zeros((nt,n+1))
+        VS = np.zeros(nt)
+        N = np.zeros(nt)
+
+        # define IC
+        u[0,0] = s0
+        VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+        N[0] = u[0,0] + VS[0]
+
+        i = 0
+        while t[i] < t_final:
+                if t[i] <= t_rad : 
+                    Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi_values[ipsi]*BMP4_dose))
+                else : 
+                    Ps = Ps_max
+
+                u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                # apply radiation
+                if t[i] == t_rad :
+                    u[i+1,:] = gmf.radiation(u[i+1,:],alpha,beta,eta,mu,d=RT_doses[j])
+                    RT_pre_size[j,ipsi] = np.sum(u[i,:])
+                    RT_pre_t[j,ipsi] = t[i]        
+                    RT_post_size[j,ipsi] = np.sum(u[i+1,:])
+                    RT_post_t[j,ipsi] = t[i+1]        
+                    
+                VS[i+1] = np.sum(u[i+1,1:n+1])
+                N[i+1] = u[i+1,0] + VS[i+1]
+                            
+                i = i + 1
+
+        u_all.append(u)
+        VS_all.append(VS)
+        N_all.append(N)
+        #print("Actuall size after 48hrs")
+        #print(N[-2]) # need to print second last item as the last one has had RT applied
+
+print("Stem cell fraction just before RT")
+print(1- VS[-2]/N[-2])    
+
+print("According to DLQ stem cell fraction should be")
+print(0.76976374)
+
+```
+
+
+
+```{python}
+
+
+fig, axs = plt.subplots(2, sharex=True)
+w = 0
+BMP4_colors = list(mcolors.TABLEAU_COLORS)
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        axs[1].plot(t,1 - VS_all[w]/N_all[w], psi_colors[ipsi], alpha=0.25) 
+        axs[0].plot(t,N_all[w],psi_colors[ipsi], alpha = 0.5)
+
+        axs[0].plot(RT_pre_t[j,ipsi],RT_pre_size[j,ipsi],'r*',label='_nolegend_')
+        axs[0].plot(RT_post_t[j,ipsi],RT_post_size[j,ipsi],'g*',label='_nolegend_')
+
+        w = w + 1
+
+axs[1].set(xlabel="Time (days)")
+axs[1].set(ylabel="Stem fraction")
+axs[0].set(ylabel="Tumour density")
+fig.suptitle("Simulated RT assay")
+leg = axs[0].legend([r"$\psi = 0$",fr"$\psi = {psi_values[1]}$"], loc='upper left')
+leg.legend_handles[0].set_color('tab:blue')
+leg.legend_handles[1].set_color('tab:orange')
+#leg.legend_handles[2].set_color('tab:green')
+#leg.legend_handles[3].set_color('tab:red')
+#leg.legend_handles[4].set_color('tab:purple')
+leg.legend_handles[0].set_alpha(1)
+leg.legend_handles[1].set_alpha(1)
+#leg.legend_handles[2].set_alpha(1)
+#leg.legend_handles[3].set_alpha(1)
+#leg.legend_handles[4].set_alpha(1)
+plt.tight_layout()
+#plt.savefig("../SMB_figs/simulated_RT_assay.svg")
+plt.savefig("png/simulated_RT_assay_QNS120.png")
+plt.savefig("svg/simulated_RT_assay_QNS120.svg")
+plt.show()
+```
+
+
+Plot simulate assay along with real data
+
+```{python}
+
+
+# plot the data
+# plot the data
+plt.figure()
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+RT_to_plot = RT_post_size/RT_post_size[0,:]
+#plt.plot(RT_doses,RT_post_size/RT_post_size[0,:],'-*')
+plt.plot(RT_doses, RT_to_plot[:,0],'b-*')
+plt.plot(RT_doses, RT_to_plot[:,1],'-*', color='orange')
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.savefig("png/simulated_dose_response_QNS120.png")
+plt.savefig("svg/simulated_dose_response_QNS120.svg")
+plt.show()
+```
+
+## QNS108
+
+doubling time is 109.3591hrs according to this the growth should be 
+
+$$
+    N(t) = N_0 2^{t/T}
+$$
+
+```{python}
+
+N = s0*2**(48/109.3591)
+print("Expected size of colon after 48hrs for GMB1a")
+print(N)
+
+```
+
+
+```{python}
+
+cline = "QNS108"
+
+#pro_rate = m_s_estimate.x
+pro_rate = fitted_pro_rates[fitted_pro_rates["cline"] == cline]["pro_rate"].iloc[0] # value from the fit
+
+t_final = t_rad + t_assay
+
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+
+# According to the RT data fits for QNS120 we get
+#alpha = 0.2175843971485717 / eta 
+#beta =  8.702061194838374e-15 / eta
+
+# Assuming alpha/beta = 10 fixed
+alpha = 0.15131625 / eta
+beta = (0.15131625/10) / eta
+
+psi_values = [0,psi_fits[psi_fits["cline"]==cline]["Psi_10"].iloc[0]] # different values of psi used in assay
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+
+# set up array to store model solution
+u_all = []
+VS_all = []
+N_all = []
+
+
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        # set up array to store model solution
+        u = np.zeros((nt,n+1))
+        VS = np.zeros(nt)
+        N = np.zeros(nt)
+
+        # define IC
+        u[0,0] = s0
+        VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+        N[0] = u[0,0] + VS[0]
+
+        i = 0
+        while t[i] < t_final:
+                if t[i] <= t_rad : 
+                    Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi_values[ipsi]*BMP4_dose))
+                else : 
+                    Ps = Ps_max
+
+                u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                # apply radiation
+                if t[i] == t_rad :
+                    u[i+1,:] = gmf.radiation(u[i+1,:],alpha,beta,eta,mu,d=RT_doses[j])
+                    RT_pre_size[j,ipsi] = np.sum(u[i,:])
+                    RT_pre_t[j,ipsi] = t[i]        
+                    RT_post_size[j,ipsi] = np.sum(u[i+1,:])
+                    RT_post_t[j,ipsi] = t[i+1]        
+                    
+                VS[i+1] = np.sum(u[i+1,1:n+1])
+                N[i+1] = u[i+1,0] + VS[i+1]
+                            
+                i = i + 1
+
+        u_all.append(u)
+        VS_all.append(VS)
+        N_all.append(N)
+        #print("Actuall size after 48hrs")
+        #print(N[-2]) # need to print second last item as the last one has had RT applied
+
+print("Stem cell fraction just before RT")
+print(1- VS[-2]/N[-2])    
+
+print("According to DLQ stem cell fraction should be")
+print(0.97809831)
+
+```
+
+
+
+```{python}
+
+
+fig, axs = plt.subplots(2, sharex=True)
+w = 0
+BMP4_colors = list(mcolors.TABLEAU_COLORS)
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        axs[1].plot(t,1 - VS_all[w]/N_all[w], psi_colors[ipsi], alpha=0.25) 
+        axs[0].plot(t,N_all[w],psi_colors[ipsi], alpha = 0.5)
+
+        axs[0].plot(RT_pre_t[j,ipsi],RT_pre_size[j,ipsi],'r*',label='_nolegend_')
+        axs[0].plot(RT_post_t[j,ipsi],RT_post_size[j,ipsi],'g*',label='_nolegend_')
+
+        w = w + 1
+
+axs[1].set(xlabel="Time (days)")
+axs[1].set(ylabel="Stem fraction")
+axs[0].set(ylabel="Tumour density")
+fig.suptitle("Simulated RT assay")
+leg = axs[0].legend([r"$\psi = 0$",fr"$\psi = {psi_values[1]}$"], loc='upper left')
+leg.legend_handles[0].set_color('tab:blue')
+leg.legend_handles[1].set_color('tab:orange')
+#leg.legend_handles[2].set_color('tab:green')
+#leg.legend_handles[3].set_color('tab:red')
+#leg.legend_handles[4].set_color('tab:purple')
+leg.legend_handles[0].set_alpha(1)
+leg.legend_handles[1].set_alpha(1)
+#leg.legend_handles[2].set_alpha(1)
+#leg.legend_handles[3].set_alpha(1)
+#leg.legend_handles[4].set_alpha(1)
+plt.tight_layout()
+#plt.savefig("../SMB_figs/simulated_RT_assay.svg")
+plt.savefig("png/simulated_RT_assay_QNS108.png")
+plt.savefig("svg/simulated_RT_assay_QNS108.svg")
+plt.show()
+
+```
+
+
+
+Plot simulate assay along with real data
+
+```{python}
+
+
+# plot the data
+# plot the data
+plt.figure()
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+RT_to_plot = RT_post_size/RT_post_size[0,:]
+#plt.plot(RT_doses,RT_post_size/RT_post_size[0,:],'-*')
+plt.plot(RT_doses, RT_to_plot[:,0],'b-*')
+plt.plot(RT_doses, RT_to_plot[:,1],'-*', color='orange')
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.savefig("png/simulated_dose_response_QNS108.png")
+plt.savefig("svg/simulated_dose_response_QNS108.svg")
+plt.show()
+```
+
+## QNS315
+
+doubling time is 63.61046hrs according to this the growth should be 
+
+$$
+    N(t) = N_0 2^{t/T}
+$$
+
+```{python}
+
+N = s0*2**(48/63.61046)
+print("Expected size of colon after 48hrs for GMB1a")
+print(N)
+
+```
+
+
+```{python}
+
+cline = "QNS315"
+
+#pro_rate = m_s_estimate.x
+pro_rate = fitted_pro_rates[fitted_pro_rates["cline"] == cline]["pro_rate"].iloc[0] # value from the fit
+
+t_final = t_rad + t_assay
+
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+
+# According to the RT data fits for QNS120 we get
+#alpha = 8.633812961320722e-15 / eta 
+#beta =  0.027575866247915973 / eta
+
+# Assuming alpha/beta = 10 fixed
+alpha = 0.0841315 / eta
+beta = (0.0841315/10) / eta
+
+psi_values = [0,psi_fits[psi_fits["cline"]==cline]["Psi_10"].iloc[0]] # different values of psi used in assay
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+
+# set up array to store model solution
+u_all = []
+VS_all = []
+N_all = []
+
+
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        # set up array to store model solution
+        u = np.zeros((nt,n+1))
+        VS = np.zeros(nt)
+        N = np.zeros(nt)
+
+        # define IC
+        u[0,0] = s0
+        VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+        N[0] = u[0,0] + VS[0]
+
+        i = 0
+        while t[i] < t_final:
+                if t[i] <= t_rad : 
+                    Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi_values[ipsi]*BMP4_dose))
+                else : 
+                    Ps = Ps_max
+
+                u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                # apply radiation
+                if t[i] == t_rad :
+                    u[i+1,:] = gmf.radiation(u[i+1,:],alpha,beta,eta,mu,d=RT_doses[j])
+                    RT_pre_size[j,ipsi] = np.sum(u[i,:])
+                    RT_pre_t[j,ipsi] = t[i]        
+                    RT_post_size[j,ipsi] = np.sum(u[i+1,:])
+                    RT_post_t[j,ipsi] = t[i+1]        
+                    
+                VS[i+1] = np.sum(u[i+1,1:n+1])
+                N[i+1] = u[i+1,0] + VS[i+1]
+                            
+                i = i + 1
+
+        u_all.append(u)
+        VS_all.append(VS)
+        N_all.append(N)
+        #print("Actuall size after 48hrs")
+        #print(N[-2]) # need to print second last item as the last one has had RT applied
+
+print("Stem cell fraction just before RT")
+print(1- VS[-2]/N[-2])    
+
+print("According to DLQ stem cell fraction should be")
+print(1)
+
+```
+
+
+
+```{python}
+
+
+fig, axs = plt.subplots(2, sharex=True)
+w = 0
+BMP4_colors = list(mcolors.TABLEAU_COLORS)
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        axs[1].plot(t,1 - VS_all[w]/N_all[w], psi_colors[ipsi], alpha=0.25) 
+        axs[0].plot(t,N_all[w],psi_colors[ipsi], alpha = 0.5)
+
+        axs[0].plot(RT_pre_t[j,ipsi],RT_pre_size[j,ipsi],'r*',label='_nolegend_')
+        axs[0].plot(RT_post_t[j,ipsi],RT_post_size[j,ipsi],'g*',label='_nolegend_')
+
+        w = w + 1
+
+axs[1].set(xlabel="Time (days)")
+axs[1].set(ylabel="Stem fraction")
+axs[0].set(ylabel="Tumour density")
+fig.suptitle("Simulated RT assay")
+leg = axs[0].legend([r"$\psi = 0$",fr"$\psi = {psi_values[1]}$"], loc='upper left')
+leg.legend_handles[0].set_color('tab:blue')
+leg.legend_handles[1].set_color('tab:orange')
+#leg.legend_handles[2].set_color('tab:green')
+#leg.legend_handles[3].set_color('tab:red')
+#leg.legend_handles[4].set_color('tab:purple')
+leg.legend_handles[0].set_alpha(1)
+leg.legend_handles[1].set_alpha(1)
+#leg.legend_handles[2].set_alpha(1)
+#leg.legend_handles[3].set_alpha(1)
+#leg.legend_handles[4].set_alpha(1)
+plt.tight_layout()
+#plt.savefig("../SMB_figs/simulated_RT_assay.svg")
+plt.savefig("png/simulated_RT_assay_QNS315.png")
+plt.savefig("svg/simulated_RT_assay_QNS315.svg")
+plt.show()
+
+```
+
+
+Plot simulate assay along with real data
+
+```{python}
+
+
+# plot the data
+# plot the data
+plt.figure()
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+RT_to_plot = RT_post_size/RT_post_size[0,:]
+#plt.plot(RT_doses,RT_post_size/RT_post_size[0,:],'-*')
+plt.plot(RT_doses, RT_to_plot[:,0],'b-*')
+plt.plot(RT_doses, RT_to_plot[:,1],'-*', color='orange')
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.savefig("png/simulated_dose_response_QNS315.png")
+plt.savefig("svg/simulated_dose_response_QNS315.svg")
+plt.show()
+```
+
+## QNS657
+
+doubling time is 75.63042hrs according to this the growth should be 
+
+$$
+    N(t) = N_0 2^{t/T}
+$$
+
+```{python}
+
+N = s0*2**(48/75.63042)
+print("Expected size of colon after 48hrs for GMB1a")
+print(N)
+
+```
+
+
+```{python}
+
+cline = "QNS657"
+
+#pro_rate = m_s_estimate.x
+pro_rate = fitted_pro_rates[fitted_pro_rates["cline"] == cline]["pro_rate"].iloc[0] # value from the fit
+
+t_final = t_rad + t_assay
+
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+
+# According to the RT data fits for QNS120 we get
+#alpha = 0.06416341211391817 / eta 
+#beta =  0.019133324269813796 / eta
+
+# Assuming alpha/beta = 10 fixed
+alpha = 0.10378728 / eta
+beta = (0.10378728/10) / eta
+
+psi_values = [0,psi_fits[psi_fits["cline"]==cline]["Psi_10"].iloc[0]] # different values of psi used in assay
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+
+# set up array to store model solution
+u_all = []
+VS_all = []
+N_all = []
+
+
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        # set up array to store model solution
+        u = np.zeros((nt,n+1))
+        VS = np.zeros(nt)
+        N = np.zeros(nt)
+
+        # define IC
+        u[0,0] = s0
+        VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+        N[0] = u[0,0] + VS[0]
+
+        i = 0
+        while t[i] < t_final:
+                if t[i] <= t_rad : 
+                    Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi_values[ipsi]*BMP4_dose))
+                else : 
+                    Ps = Ps_max
+
+                u[i+1,:] = u[i,:] + dt * gmf.gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)
+                # apply radiation
+                if t[i] == t_rad :
+                    u[i+1,:] = gmf.radiation(u[i+1,:],alpha,beta,eta,mu,d=RT_doses[j])
+                    RT_pre_size[j,ipsi] = np.sum(u[i,:])
+                    RT_pre_t[j,ipsi] = t[i]        
+                    RT_post_size[j,ipsi] = np.sum(u[i+1,:])
+                    RT_post_t[j,ipsi] = t[i+1]        
+                    
+                VS[i+1] = np.sum(u[i+1,1:n+1])
+                N[i+1] = u[i+1,0] + VS[i+1]
+                            
+                i = i + 1
+
+        u_all.append(u)
+        VS_all.append(VS)
+        N_all.append(N)
+        #print("Actuall size after 48hrs")
+        #print(N[-2]) # need to print second last item as the last one has had RT applied
+
+print("Stem cell fraction just before RT")
+print(1- VS[-2]/N[-2])    
+
+print("According to DLQ stem cell fraction should be")
+print(0.6823287)
+
+```
+
+
+
+```{python}
+
+
+fig, axs = plt.subplots(2, sharex=True)
+w = 0
+BMP4_colors = list(mcolors.TABLEAU_COLORS)
+for ipsi in range(npsi) :
+    for j in range(nRT):
+
+        axs[1].plot(t,1 - VS_all[w]/N_all[w], psi_colors[ipsi], alpha=0.25) 
+        axs[0].plot(t,N_all[w],psi_colors[ipsi], alpha = 0.5)
+
+        axs[0].plot(RT_pre_t[j,ipsi],RT_pre_size[j,ipsi],'r*',label='_nolegend_')
+        axs[0].plot(RT_post_t[j,ipsi],RT_post_size[j,ipsi],'g*',label='_nolegend_')
+
+        w = w + 1
+
+axs[1].set(xlabel="Time (days)")
+axs[1].set(ylabel="Stem fraction")
+axs[0].set(ylabel="Tumour density")
+fig.suptitle("Simulated RT assay")
+leg = axs[0].legend([r"$\psi = 0$",fr"$\psi = {psi_values[1]}$"], loc='upper left')
+leg.legend_handles[0].set_color('tab:blue')
+leg.legend_handles[1].set_color('tab:orange')
+#leg.legend_handles[2].set_color('tab:green')
+#leg.legend_handles[3].set_color('tab:red')
+#leg.legend_handles[4].set_color('tab:purple')
+leg.legend_handles[0].set_alpha(1)
+leg.legend_handles[1].set_alpha(1)
+#leg.legend_handles[2].set_alpha(1)
+#leg.legend_handles[3].set_alpha(1)
+#leg.legend_handles[4].set_alpha(1)
+plt.tight_layout()
+#plt.savefig("../SMB_figs/simulated_RT_assay.svg")
+plt.savefig("png/simulated_RT_assay_QNS657.png")
+plt.savefig("svg/simulated_RT_assay_QNS657.svg")
+plt.show()
+
+```
+
+
+
+Plot simulate assay along with real data
+
+```{python}
+
+
+# plot the data
+# plot the data
+plt.figure()
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "CTRL")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "CTRL")]["norm_pe"] , 'o',alpha = 0.2)
+plt.plot(rt_df[(rt_df["cline"] == cline) & (rt_df["group"] == "BMP4")]["dose"],rt_df[(rt_df["cline"]== cline) & (rt_df["group"] == "BMP4")]["norm_pe"] , 'o',alpha = 0.2)
+
+RT_to_plot = RT_post_size/RT_post_size[0,:]
+#plt.plot(RT_doses,RT_post_size/RT_post_size[0,:],'-*')
+plt.plot(RT_doses, RT_to_plot[:,0],'b-*')
+plt.plot(RT_doses, RT_to_plot[:,1],'-*', color='orange')
+
+plt.legend(["CTRL", "B100"])
+plt.xlabel("Dose (Gy)")
+plt.ylabel("Normalised surving fraction")
+plt.yscale('log')
+ticks = [0.01,0.02,0.05,0.1,0.2,0.5,1]
+ticks_str = list(map(str, ticks)) # Convert each number to a string
+plt.yticks(ticks, ticks_str)
+plt.savefig("png/simulated_dose_response_QNS657.png")
+plt.savefig("svg/simulated_dose_response_QNS657.svg")
+plt.show()
+```
+
+# Visualise psi values
+
+psi defines sensitivity to BMP4, it goes from 0,1.
+
+```{python}
+
+
+# define constnts
+Ps_min = 0
+Ps_max = 1
+
+# Create data points
+x = np.arange(0, 0.011, 0.001)
+z = Ps_min + (Ps_max - Ps_min)* 1 / (1 + x*BMP4_dose)
+
+plt.figure(figsize=(6, 3.5))
+
+# Plot the curve
+plt.plot(x,z,'k', label = "_nolegend_")
+plt.xlabel(r"$\psi$", fontsize = 14)
+plt.ylabel(r"$P_s$", fontsize = 14)
+plt.xticks(fontsize = 12)
+plt.yticks(fontsize = 12)
+
+# Define line styles and colors
+line_styles = ['-', '--', '-.', ':']
+colors = ['y', 'g', 'b', 'r', 'm']
+
+# Plotting
+for i, cline in enumerate(psi_fits["cline"]):
+    psi = psi_fits[psi_fits["cline"] == cline]["Psi_10"].iloc[0]
+    # Find the corresponding y value on the curve for the given psi
+    y_value = Ps_min + (Ps_max - Ps_min) * 1 / (1 + psi * BMP4_dose)
+    # Plot vertical line up to the curve
+    plt.plot([psi, psi], [0, y_value], linestyle=line_styles[i % len(line_styles)], color=colors[i % len(colors)], label=cline)
+    # Plot horizontal line back to the left
+    plt.plot([psi, 0], [y_value, y_value], linestyle=line_styles[i % len(line_styles)], color=colors[i % len(colors)])
+
+plt.xlim(left=-0.001)
+plt.ylim(bottom=0)
+plt.legend(fontsize=10)
+plt.tight_layout()
+plt.savefig("png/psi_values_visualised.png")
+plt.savefig("../Manuscript/images/png/psi_values_visualised.png")
+plt.savefig("svg/psi_values_visualised.svg")
+plt.show()
+
+```
+
+For a varying BMP4 dose show the effect of psi
+
+```{python}
+
+# define constnts
+Ps_min = 0
+Ps_max = 1
+
+
+# Create data points here x represents BMP4 dose.
+x = np.arange(0, 20, 0.001)
+
+# Define line styles and colors
+line_styles = ['-', '--', '-.', ':']
+colors = ['y', 'g', 'b', 'r', 'm']
+
+
+# Plotting
+for i, cline in enumerate(psi_fits["cline"]):
+    psi = psi_fits[psi_fits["cline"] == cline]["Psi_10"].iloc[0]
+    plt.plot(x,Ps_min + (Ps_max - Ps_min)* 1 / (1 + x*psi))
+
+plt.xlim(left=-0.001)
+plt.ylim(bottom=0)
+plt.xlabel("BMP4", fontsize = 14)
+plt.ylabel(r"$P_s$", fontsize = 14)
+plt.xticks(fontsize = 12)
+plt.yticks(fontsize = 12)
+plt.legend(psi_fits["cline"])
+plt.tight_layout()
+plt.show()
+
+```
+

@@ -1,0 +1,61 @@
+---
+title: Detection/death condition plot
+description: Plot the probability of detection/death
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+# Import packages
+
+```{python}
+#| import: load_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+from numba import jit
+```
+
+all functions are in: "notebooks/gsc_model_functions.py"
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+```{python}
+#| label: fig-prob_detection
+#| fig-cap: Probability per day of detecting the tumour for given tumour density.
+#| fig-alt: plot
+
+from gsc_model_params import lam,detect_threshold,death_threshold,detection_sensitivity,death_sensitivity
+
+N = np.linspace(0,1,101)
+
+kobe = gmf.detection_death(detect_threshold, N, detection_sensitivity, lam)
+kobe_death = gmf.detection_death(death_threshold, N, death_sensitivity, lam)
+plt.plot(N,kobe)
+plt.plot(N,kobe_death)
+plt.xlabel("Tumour size", fontsize=14)
+plt.ylabel("Probability per day", fontsize=14)
+#plt.title("Probablity of detecting tumour per day", fontsize=14)
+plt.legend(["Detect", "Death"], fontsize=14)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+plt.tight_layout()
+#plt.savefig("../SMB_figs/detection_death.svg")
+plt.savefig("../Manuscript/images/png/detect_death.png")
+plt.show()
+```

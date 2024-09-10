@@ -1,0 +1,520 @@
+---
+title: Fit the psi value
+description: fit the psi value for different cell lines
+authors:
+  - name: Nicholas Harbour
+  - name: Markus Owen
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+    code-tools: true
+    highlight-style: atom-one
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    date: now
+    date-modified: last-modified
+    date-format: "MMMM DD, YYYY, HH:mm:ss"
+jupyter: python3
+---
+
+# Import packages
+
+```{python}
+#| label: Import_packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import lognorm
+import matplotlib.colors as mcolors
+from scipy.optimize import minimize
+
+```
+
+# import functions
+
+all functions are in: "notebooks/gsc_model_functions.py"
+
+```{python}
+#| label: import_functions
+
+import gsc_model_functions as gmf
+```
+
+
+# Load the data
+
+```{python}
+# doubling time data
+doubling_time_data = pd.read_csv("Data/Growth_rate_raw_data.csv")
+# fitted proliferation rates to the doubling time
+fitted_pro_rates = pd.read_csv("Data/Pro_rates_fitted.csv")
+# RT survival data (with normalised pe)
+rt_df = pd.read_csv("Data/rt_df.csv")
+alpha_beta_df = pd.read_csv("Data/alpha_beta_data.csv")
+
+```
+
+# Fit psi
+
+The only thing that we need to fit psi is the expected fraction of GSCs after 48hrs. 
+
+## GBM1a 
+
+
+```{python}
+
+cline = "GBM1a"
+
+### override some parameters ###
+Ps_max = 1 # Max probability of self renewal
+Ps_min = 0 
+
+n= 10
+k=1
+delta_s = 0.001 # death rate of GSCs, T_{1/2}=693 days
+delta_v =  0.01*np.ones(n) # death rate of TCs, T_{1/2}=69.3 days
+
+s0 = 0.1 # Initial GSCs
+dt = 0.0001 # time step, it does appear to fit more accuratly with smaller time step
+t_rad = 2 # time of radiotherapy
+t_assay = dt # time of assay after radiotherapy
+t_final = t_rad 
+
+BMP4_dose = 100 # bmp4 dose is now fixed
+
+#pro_rate = m_s_estimate.x
+pro_rate = fitted_pro_rates[fitted_pro_rates["cline"] == cline]["pro_rate"].iloc[0] # value from the fit
+
+mv_rho_scale = 2/365 # TC proliferation rate mv = mv_rho_scale*rho
+ms_mv_scale = 1 # GSC proliferation rate = ms_mv_scale*mv
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+# set up array to store model solution
+u = np.zeros((nt,n+1))
+VS = np.zeros(nt)
+N = np.zeros(nt)
+
+# define IC
+u[0,0] = s0
+VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+N[0] = u[0,0] + VS[0]
+
+# there was an issue with Numba/Jit with this minimisation so I redefine it here without jit
+def gsc_model_dudt(u, n, Ps,k,ms,mv,delta_s,delta_v):
+    
+    dudt = np.zeros(n+1)
+    N_ = np.sum(u)
+    # u = [s, v1, v2, v3, ..., vn]
+    dudt[0] = (2*Ps - 1) * ms * u[0] * (1 - (N_)/k) - delta_s*u[0]
+    dudt[1] = 2*(1 - Ps) * ms * u[0] * (1 - (N_)/k) - mv[0]*u[1]*(1 - (N_)/k) - delta_v[0]*u[1]
+    # NOTE: 2:n indexes elements 2, 3, 4, ... n-1
+    dudt[2:n] = 2*mv[0:n-2]*u[1:n-1]*(1 - (N_)/k) - mv[1:n-1]*u[2:n]*(1 - (N_)/k) - delta_v[1:n-1]*u[2:n]
+    dudt[n] = 2*mv[n-2]*u[n-1]*(1 - (N_)/k) - delta_v[n-1]*u[n]
+    return dudt
+
+
+def psi_objective_func(psi):
+    i = 0
+    while t[i] < t_final:
+
+        Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi*BMP4_dose))
+
+        u[i+1,:] = u[i,:] + dt * gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)    
+            
+        VS[i+1] = np.sum(u[i+1,1:n+1])
+        N[i+1] = u[i+1,0] + VS[i+1]
+                    
+        i = i + 1
+    print(f"Current guess: {psi}")
+
+    return np.abs((u[-1,0]/N[-1]) - alpha_beta_df[alpha_beta_df["cline"] == cline ]["F_10"].iloc[0])
+
+# psi must be positive
+bnds = [(0, None)]
+
+# Initial guess
+x0 = 0.008
+# Call the minimize function, it seems "powell" minimiser works best for this problem.
+psi_estimate = minimize(psi_objective_func, x0,bounds=bnds, method="powell")
+print(psi_estimate)
+print(f"Psi estimated  = {psi_estimate.x}")
+
+print(f"Estimated fraction of GSCs after 48hrs: {(u[-1,0])/N[-1]}")
+print(f"Predicted fraction of GSCs after 48hrs: 0.5210781")
+
+df = pd.DataFrame({'cline': cline, 'Psi': psi_estimate.x})
+
+
+```
+
+
+## QNS120 
+
+
+```{python}
+
+cline = "QNS120"
+
+### override some parameters ###
+Ps_max = 1 # Max probability of self renewal
+Ps_min = 0 
+
+n= 10
+k=1
+delta_s = 0.001 # death rate of GSCs, T_{1/2}=693 days
+delta_v =  0.01*np.ones(n) # death rate of TCs, T_{1/2}=69.3 days
+
+s0 = 0.1 # Initial GSCs
+dt = 0.0001 # time step, it does appear to fit more accuratly with smaller time step
+t_rad = 2 # time of radiotherapy
+t_assay = dt # time of assay after radiotherapy
+t_final = t_rad 
+
+BMP4_dose = 100 # bmp4 dose is now fixed
+
+#pro_rate = m_s_estimate.x
+pro_rate = fitted_pro_rates[fitted_pro_rates["cline"] == cline]["pro_rate"].iloc[0] # value from the fit
+
+mv_rho_scale = 2/365 # TC proliferation rate mv = mv_rho_scale*rho
+ms_mv_scale = 1 # GSC proliferation rate = ms_mv_scale*mv
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+# set up array to store model solution
+u = np.zeros((nt,n+1))
+VS = np.zeros(nt)
+N = np.zeros(nt)
+
+# define IC
+u[0,0] = s0
+VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+N[0] = u[0,0] + VS[0]
+
+
+def psi_objective_func(psi):
+    i = 0
+    while t[i] < t_final:
+
+        Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi*BMP4_dose))
+
+        u[i+1,:] = u[i,:] + dt * gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)    
+            
+        VS[i+1] = np.sum(u[i+1,1:n+1])
+        N[i+1] = u[i+1,0] + VS[i+1]
+                    
+        i = i + 1
+    print(f"Current guess: {psi}")
+
+    return np.abs((u[-1,0]/N[-1]) - alpha_beta_df[alpha_beta_df["cline"] == cline ]["F_10"].iloc[0])
+
+# psi must be positive
+bnds = [(0, None)]
+
+# Initial guess
+x0 = 0.005
+# Call the minimize function, it seems "powell" minimiser works best for this problem.
+psi_estimate = minimize(psi_objective_func, x0,bounds=bnds, method="powell")
+print(psi_estimate)
+print(f"Psi estimated  = {psi_estimate.x}")
+
+print(f"Estimated fraction of GSCs after 48hrs: {(u[-1,0])/N[-1]}")
+print(f"Predicted fraction of GSCs after 48hrs: 0.4063945")
+
+# New row to add as a DataFrame
+#new_row = pd.DataFrame({'cline': [cline], 'Psi': psi_estimate.x[0]})
+
+# Concatenate the new row to the existing DataFrame
+#df = pd.concat([df, new_row], ignore_index=True)
+
+
+```
+
+## QNS108
+
+
+```{python}
+
+cline = "QNS108"
+
+### override some parameters ###
+Ps_max = 1 # Max probability of self renewal
+Ps_min = 0 
+
+n= 10
+k=1
+delta_s = 0.001 # death rate of GSCs, T_{1/2}=693 days
+delta_v =  0.01*np.ones(n) # death rate of TCs, T_{1/2}=69.3 days
+
+s0 = 0.1 # Initial GSCs
+dt = 0.0001 # time step, it does appear to fit more accuratly with smaller time step
+t_rad = 2 # time of radiotherapy
+t_assay = dt # time of assay after radiotherapy
+t_final = t_rad 
+
+BMP4_dose = 100 # bmp4 dose is now fixed
+
+#pro_rate = m_s_estimate.x
+pro_rate = fitted_pro_rates[fitted_pro_rates["cline"] == cline]["pro_rate"].iloc[0] # value from the fit
+
+mv_rho_scale = 2/365 # TC proliferation rate mv = mv_rho_scale*rho
+ms_mv_scale = 1 # GSC proliferation rate = ms_mv_scale*mv
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+# set up array to store model solution
+u = np.zeros((nt,n+1))
+VS = np.zeros(nt)
+N = np.zeros(nt)
+
+# define IC
+u[0,0] = s0
+VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+N[0] = u[0,0] + VS[0]
+
+
+def psi_objective_func(psi):
+    i = 0
+    while t[i] < t_final:
+
+        Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi*BMP4_dose))
+
+        u[i+1,:] = u[i,:] + dt * gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)    
+            
+        VS[i+1] = np.sum(u[i+1,1:n+1])
+        N[i+1] = u[i+1,0] + VS[i+1]
+                    
+        i = i + 1
+    print(f"Current guess: {psi}")
+
+    return np.abs((u[-1,0]/N[-1]) - alpha_beta_df[alpha_beta_df["cline"] == cline]["F_10"].iloc[0])
+
+# psi must be positive
+bnds = [(0, None)]
+
+# Initial guess
+x0 = 0.05
+# Call the minimize function, it seems "powell" minimiser works best for this problem.
+psi_estimate = minimize(psi_objective_func, x0,bounds=bnds, method="powell")
+print(psi_estimate)
+print(f"Psi estimated  = {psi_estimate.x}")
+
+print(f"Estimated fraction of GSCs after 48hrs: {(u[-1,0])/N[-1]}")
+print(f"Predicted fraction of GSCs after 48hrs: 0.97809831")
+
+# New row to add as a DataFrame
+#new_row = pd.DataFrame({'cline': cline, 'Psi': psi_estimate.x[0]})
+
+# Concatenate the new row to the existing DataFrame
+#df = pd.concat([df, new_row], ignore_index=True)
+
+
+```
+
+
+## QNS315
+
+
+```{python}
+
+cline = "QNS315"
+
+### override some parameters ###
+Ps_max = 1 # Max probability of self renewal
+Ps_min = 0 
+
+n= 10
+k=1
+delta_s = 0.001 # death rate of GSCs, T_{1/2}=693 days
+delta_v =  0.01*np.ones(n) # death rate of TCs, T_{1/2}=69.3 days
+
+s0 = 0.1 # Initial GSCs
+dt = 0.0001 # time step, it does appear to fit more accuratly with smaller time step
+t_rad = 2 # time of radiotherapy
+t_assay = dt # time of assay after radiotherapy
+t_final = t_rad 
+
+BMP4_dose = 100 # bmp4 dose is now fixed
+
+#pro_rate = m_s_estimate.x
+pro_rate = fitted_pro_rates[fitted_pro_rates["cline"] == cline]["pro_rate"].iloc[0] # value from the fit
+
+mv_rho_scale = 2/365 # TC proliferation rate mv = mv_rho_scale*rho
+ms_mv_scale = 1 # GSC proliferation rate = ms_mv_scale*mv
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+# set up array to store model solution
+u = np.zeros((nt,n+1))
+VS = np.zeros(nt)
+N = np.zeros(nt)
+
+# define IC
+u[0,0] = s0
+VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+N[0] = u[0,0] + VS[0]
+
+
+def psi_objective_func(psi):
+    i = 0
+    while t[i] < t_final:
+
+        Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi*BMP4_dose))
+
+        u[i+1,:] = u[i,:] + dt * gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)    
+            
+        VS[i+1] = np.sum(u[i+1,1:n+1])
+        N[i+1] = u[i+1,0] + VS[i+1]
+                    
+        i = i + 1
+    print(f"Current guess: {psi}")
+
+    return np.abs((u[-1,0]/N[-1]) - alpha_beta_df[alpha_beta_df["cline"] == cline ]["F_10"].iloc[0])
+
+# psi must be positive
+bnds = [(0, None)]
+
+# Initial guess
+x0 = 0.05
+# Call the minimize function, it seems "powell" minimiser works best for this problem.
+psi_estimate = minimize(psi_objective_func, x0,bounds=bnds, method="powell")
+print(psi_estimate)
+print(f"Psi estimated  = {psi_estimate.x}")
+
+print(f"Estimated fraction of GSCs after 48hrs: {(u[-1,0])/N[-1]}")
+print(f"Predicted fraction of GSCs after 48hrs: 1")
+
+# Real value of psi is just 0 so we overide it here but leave the fit just incease we change to MSC100
+# New row to add as a DataFrame
+#new_row = pd.DataFrame({'cline': cline, 'Psi': [0]})
+
+# Concatenate the new row to the existing DataFrame
+#df = pd.concat([df, new_row], ignore_index=True)
+
+
+```
+
+
+## QNS657
+
+
+```{python}
+
+cline = "QNS657"
+
+### override some parameters ###
+Ps_max = 1 # Max probability of self renewal
+Ps_min = 0 
+
+n= 10
+k=1
+delta_s = 0.001 # death rate of GSCs, T_{1/2}=693 days
+delta_v =  0.01*np.ones(n) # death rate of TCs, T_{1/2}=69.3 days
+
+s0 = 0.1 # Initial GSCs
+dt = 0.0001 # time step, it does appear to fit more accuratly with smaller time step
+t_rad = 2 # time of radiotherapy
+t_assay = dt # time of assay after radiotherapy
+t_final = t_rad 
+
+BMP4_dose = 100 # bmp4 dose is now fixed
+
+#pro_rate = m_s_estimate.x
+pro_rate = fitted_pro_rates[fitted_pro_rates["cline"] == cline]["pro_rate"].iloc[0] # value from the fit
+
+mv_rho_scale = 2/365 # TC proliferation rate mv = mv_rho_scale*rho
+ms_mv_scale = 1 # GSC proliferation rate = ms_mv_scale*mv
+# Define proliferation rates for the diffent cell pops
+mv = mv_rho_scale*pro_rate*np.ones(n) 
+ms = ms_mv_scale*mv[0]
+mv[n-1] = 0 
+
+# set up time grid
+t = np.arange(0, t_final+dt/2, dt)
+nt = len(t)
+
+# set up array to store model solution
+u = np.zeros((nt,n+1))
+VS = np.zeros(nt)
+N = np.zeros(nt)
+
+# define IC
+u[0,0] = s0
+VS[0] = np.sum(u[0,1:n+1]) # sum the 1th to nth entries
+N[0] = u[0,0] + VS[0]
+
+
+def psi_objective_func(psi):
+    i = 0
+    while t[i] < t_final:
+
+        Ps = Ps_min + (Ps_max - Ps_min)*(1 / (1 + psi*BMP4_dose))
+
+        u[i+1,:] = u[i,:] + dt * gsc_model_dudt(u[i,:],n,Ps,k,ms,mv,delta_s,delta_v)    
+            
+        VS[i+1] = np.sum(u[i+1,1:n+1])
+        N[i+1] = u[i+1,0] + VS[i+1]
+                    
+        i = i + 1
+    print(f"Current guess: {psi}")
+
+    return np.abs((u[-1,0]/N[-1]) - alpha_beta_df[alpha_beta_df["cline"] == cline ]["F_10"].iloc[0])
+
+# psi must be positive
+bnds = [(0, None)]
+
+# Initial guess
+x0 = 0.05
+# Call the minimize function, it seems "powell" minimiser works best for this problem.
+psi_estimate = minimize(psi_objective_func, x0,bounds=bnds, method="powell")
+print(psi_estimate)
+print(f"Psi estimated  = {psi_estimate.x}")
+
+print(f"Estimated fraction of GSCs after 48hrs: {(u[-1,0])/N[-1]}")
+print(f"Predicted fraction of GSCs after 48hrs: 0.6823287")
+
+# New row to add as a DataFrame
+#new_row = pd.DataFrame({'cline': cline, 'Psi': psi_estimate.x[0]})
+
+# Concatenate the new row to the existing DataFrame
+#df = pd.concat([df, new_row], ignore_index=True)
+
+
+```
+
+# Summary of fits
+
+```{python}
+
+#print(df)
+# Save the DataFrame to a CSV file
+#df.to_csv('Data/fitted_psi_value.csv', index=False)
+```
